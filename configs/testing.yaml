@@ -1,0 +1,38 @@
+model:
+  layers: 1
+  hidden: 16
+  heads: 2
+  feedforward: 32
+  context: 256
+  dropout: 0.1
+vocab_size: 17
+training:
+  microbatch_size: 2
+  context: 8
+  stride: 4
+  accumulation: 2
+  learning_rate: 0.001
+  betas:
+  - 0.9
+  - 0.999
+  epsilon: 1.0e-08
+  weight_decay: 0.01
+  clip_norm: 1.0
+  schedule: cosine
+  warmup_updates: 2
+  decay_updates: 8
+  budget_policy: optimizer_steps
+  budget_limit: 5
+  seed: 42
+  fp16: false
+  validation_interval: 0
+  checkpoint_interval: 2
+tokenizer_tests:
+  seed: 17
+  tokenizer:
+    base_vocab_size: 280
+    expanded_vocab_size: 360
+    min_frequency: 1
+    eos_token: <|endoftext|>
+    add_prefix_space: false
+    use_regex: true

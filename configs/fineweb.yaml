@@ -1,0 +1,38 @@
+protocol: fineweb_v1
+root: data/fineweb_v1
+source:
+  dataset: HuggingFaceFW/fineweb
+  configuration: sample-10BT
+  revision: 9bb295ddab0e05d785b879661af7260fed5140fc
+  files:
+    - path: sample/10BT/014_00000.parquet
+      size: 574962194
+      sha256: 7168f92a680b3e28155a6b654ebf235b19bf4d2ab35f91dbab3fb47cbd629a8e
+selection:
+  seed: 42
+  validation_modulus: 16
+  smoke_bytes: 2000000
+  pilot_bytes: 200000000
+  validation_bytes: 10000000
+future_tiers_not_authorized:
+  medium_bytes: 1000000000
+  large_bytes: 5000000000
+tokenizer:
+  base_vocab_size: 8192
+  expanded_vocab_size: 16384
+  min_frequency: 2
+  eos_token: <|endoftext|>
+  add_prefix_space: false
+  use_regex: true
+  parallelism: false
+shards:
+  max_tokens: 2000000
+loader:
+  context: 256
+  stride: 128
+  seed: 42
+validation:
+  protocol: fineweb_document_eos_c256_s128_v1
+  context: 256
+  stride: 128
+  eos_id: 0
