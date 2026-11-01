@@ -179,17 +179,58 @@ def overshoot(counters: Counters, policy: str, limit: int) -> int:
 
 
 def training_flops(model, batch: int, time: int) -> int:
-    """Dense forward+backward estimate: 6NP + 12LB T²d.
+    """Legacy dense/PQ estimate, or representation-specific arithmetic estimate.
 
     P includes vocabulary projection and backbone matrices/affines. Attention
     products are added separately. Ignores optimizer, softmax, recomputation,
     gather/scatter work and hardware utilization; includes padded executed positions.
-    Compressed representations still pay for an effective dense output projection.
+    PQ still executes a dense output projection. The three train-from-scratch
+    compressed kinds use compressed_vocabulary_flops, including input work.
     """
     c = model.config
+    if model.vocabulary.specification()["kind"] in {"low_rank", "hash", "adaptive"}:
+        estimate = compressed_vocabulary_flops(model.vocabulary, batch*time)
+        backbone = sum(p.numel() for p in model.parameters()) - sum(
+            p.numel() for p in model.vocabulary.parameters())
+        return (6*batch*time*backbone + estimate["estimated_flops"]
+                + 12*c.layers*batch*time*time*c.hidden)
     # Both representations execute a dense V*d output projection. Counting only
     # compressed parameters would falsely imply a reduction in projection work.
     parameters = (sum(p.numel() for p in model.parameters())
                   - sum(p.numel() for p in model.vocabulary.parameters())
                   + model.vocabulary.vocab_size * c.hidden)
     return 6*batch*time*parameters + 12*c.layers*batch*time*time*c.hidden
+
+
+def compressed_vocabulary_flops(vocabulary, positions: int) -> dict:
+    """Analytical eager-autograd arithmetic; multiply/add each count as one FLOP.
+
+    Counts input lookup projection and output projection, including weight and
+    input gradients where applicable. Dense/PQ legacy estimates stay unchanged.
+    Zero/scatter/index/mask/copy, loss/softmax, optimizer and allocation are excluded.
+    Adaptive input band occupancy is unknown here: report bounds, use upper bound
+    in counters. Empty masked bands have zero matmul work. Does not measure time.
+    """
+    v, d, n = vocabulary.vocab_size, vocabulary.hidden, positions
+    kind = vocabulary.specification()["kind"]
+    extra = 0
+    if kind == "low_rank":
+        r = vocabulary.rank
+        # input AB: forward + B gradient + selected-A gradient; output two GEMMs.
+        lo = hi = 6*n*r*(v + 2*d)
+    elif kind == "hash":
+        k = len(vocabulary.seeds)
+        # HC^T forward/backward; weighted input sum and its two derivatives;
+        # output weighted sum and two derivatives. Reductions estimated as n adds.
+        lo = hi = 6*n*vocabulary.buckets*d
+        extra = n*d*(5*k-1) + n*v*(5*k-1)
+    elif kind == "adaptive":
+        dims = [a.shape[1] for a in vocabulary.tables]
+        output = 6*n*sum(a.shape[1]*(len(a)+d) for a in vocabulary.tables)
+        lo, hi = output + 6*n*d*min(dims), output + 6*n*d*max(dims)
+    else:
+        raise ValueError("Expected compressed train-from-initialization vocabulary")
+    return dict(estimated_flops=hi+extra, lower_bound_flops=lo+extra,
+                upper_bound_flops=hi+extra, kind=kind,
+                convention="6 per matmul inner-product term for forward and two gradients; reduction approximations",
+                exclusions="index/mask/scatter/copy/allocation, softmax/loss, optimizer, hardware utilization")

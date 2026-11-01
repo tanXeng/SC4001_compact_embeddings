@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import torch
+import hashlib
+import math
 from torch import Tensor, nn
 from torch.nn import functional as F
 
@@ -68,6 +70,163 @@ class CausalTransformer(nn.Module):
 
 
 # Embedding layers
+def _dimensions(*values):
+    if any(type(v) is not int or v < 1 for v in values):
+        raise ValueError("Dimensions must be positive integers")
+
+
+class LowRankVocabulary(nn.Module):
+    """E=A B; both input and full-softmax output use these same factors."""
+    def __init__(self, vocab_size: int, hidden: int, rank: int):
+        super().__init__()
+        _dimensions(vocab_size, hidden, rank)
+        self.vocab_size, self.hidden, self.rank = vocab_size, hidden, rank
+        self.a = nn.Parameter(torch.empty(vocab_size, rank))
+        self.b = nn.Parameter(torch.empty(rank, hidden))
+        nn.init.normal_(self.a, std=.02)
+        nn.init.normal_(self.b, std=rank**-.5)
+
+    def lookup(self, token_ids):
+        return F.embedding(token_ids, self.a) @ self.b
+
+    def project(self, hidden_states):
+        return (hidden_states @ self.b.T) @ self.a.T
+
+    def specification(self):
+        return dict(kind="low_rank", vocab_size=self.vocab_size, hidden=self.hidden,
+                    rank=self.rank, initialization="a_normal_0.02_b_normal_inv_sqrt_rank_v1")
+
+
+class HashVocabulary(nn.Module):
+    """Learned weighted shared components, not ordinary feature hashing.
+
+    Serialized indices avoid platform-dependent hashing and are verified on load.
+    SHA-256 input is ASCII 'hash_embedding_v1:{seed}:{token_id}'.
+    """
+    def __init__(self, vocab_size: int, hidden: int, buckets: int, seeds=(17, 29),
+                 importance_init="normal"):
+        super().__init__()
+        _dimensions(vocab_size, hidden, buckets)
+        if (not seeds or any(type(s) is not int or not 0 <= s < 2**63 for s in seeds)
+                or len(set(seeds)) != len(seeds) or importance_init not in {"normal", "constant"}):
+            raise ValueError("Require distinct nonnegative int64 seeds and normal/constant initialization")
+        self.vocab_size, self.hidden, self.buckets = vocab_size, hidden, buckets
+        self.seeds, self.importance_init = tuple(seeds), importance_init
+        indices = [[int.from_bytes(hashlib.sha256(
+            f"hash_embedding_v1:{s}:{i}".encode("ascii")).digest(), "big") % buckets
+                    for s in seeds] for i in range(vocab_size)]
+        self.register_buffer("indices", torch.tensor(indices, dtype=torch.int64))
+        self.components = nn.Parameter(torch.empty(buckets, hidden))
+        self.importance = nn.Parameter(torch.empty(vocab_size, len(seeds)))
+        nn.init.normal_(self.components, std=.02)
+        if importance_init == "normal":
+            nn.init.normal_(self.importance, std=len(seeds)**-.5)
+        else:
+            nn.init.constant_(self.importance, len(seeds)**-.5)
+
+    def lookup(self, token_ids):
+        codes = self.indices[token_ids]
+        return (F.embedding(codes, self.components) * self.importance[token_ids].unsqueeze(-1)).sum(-2)
+
+    def project(self, hidden_states):
+        effective = (
+            F.embedding(self.indices, self.components)
+            * self.importance.unsqueeze(-1)
+        ).sum(1)
+        return hidden_states @ effective.T
+
+    def specification(self):
+        return dict(kind="hash", vocab_size=self.vocab_size, hidden=self.hidden,
+                    buckets=self.buckets, seeds=list(self.seeds), importance_init=self.importance_init,
+                    hash_version="sha256_ascii_v1", component_std=.02)
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        supplied = state_dict.get(prefix + "indices")
+        if supplied is not None and not torch.equal(supplied.cpu(), self.indices.cpu()):
+            raise ValueError("Hash indices disagree with deterministic specification")
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
+
+class AdaptiveVocabulary(nn.Module):
+    """Frequency bands with projected tables and an exactly tied full softmax.
+
+    Counts must come only from training. Specials occupy the head in supplied
+    order; remaining ties in frequency break by original ID. EOS is trainable.
+    """
+    def __init__(self, counts: Tensor, hidden: int, cutoffs, initial_dim=None,
+                 factor=4., special_ids=(0,)):
+        super().__init__()
+        _dimensions(hidden)
+        if (counts.ndim != 1 or counts.dtype != torch.int64 or len(counts) < 1
+                or (counts < 0).any()):
+            raise ValueError("Require nonnegative int64 training counts")
+        self.vocab_size, self.hidden = len(counts), hidden
+        self.initial_dim = hidden if initial_dim is None else initial_dim
+        _dimensions(self.initial_dim)
+        if not math.isfinite(factor) or factor < 1:
+            raise ValueError("Reduction factor must be finite and >=1")
+        self.factor = float(factor)
+        self.cutoffs = tuple(cutoffs) + (len(counts),)
+        if (any(type(c) is not int for c in self.cutoffs) or
+                any(a >= b for a, b in zip((0,) + self.cutoffs, self.cutoffs))):
+            raise ValueError("Cutoffs must increase strictly inside vocabulary")
+        self.special_ids = tuple(special_ids)
+        if (len(set(special_ids)) != len(special_ids) or len(special_ids) > self.cutoffs[0]
+                or any(type(i) is not int or not 0 <= i < len(counts) for i in special_ids)):
+            raise ValueError("Special IDs must be distinct and fit the head")
+        values = counts.cpu().tolist()
+        specials = set(special_ids)
+        order = list(special_ids) + sorted((i for i in range(len(counts)) if i not in specials),
+                                         key=lambda i: (-values[i], i))
+        self.register_buffer("order", torch.tensor(order, dtype=torch.int64))
+        self.register_buffer("inverse", self.order.argsort())
+        self.tables, self.projections = nn.ParameterList(), nn.ParameterList()
+        start = 0
+        for j, end in enumerate(self.cutoffs):
+            dim = int(self.initial_dim // self.factor**j)
+            _dimensions(dim)
+            a = nn.Parameter(torch.empty(end-start, dim))
+            b = nn.Parameter(torch.empty(dim, hidden))
+            nn.init.normal_(a, std=.02)
+            nn.init.normal_(b, std=dim**-.5)
+            self.tables.append(a)
+            self.projections.append(b)
+            start = end
+
+    def lookup(self, token_ids):
+        positions = self.inverse[token_ids]
+        result = self.tables[0].new_zeros((*token_ids.shape, self.hidden))
+        start = 0
+        for end, a, b in zip(self.cutoffs, self.tables, self.projections):
+            mask = (positions >= start) & (positions < end)
+            result[mask] = F.embedding(positions[mask]-start, a) @ b
+            start = end
+        return result
+
+    def project(self, hidden_states):
+        ranked = torch.cat([(hidden_states @ b.T) @ a.T
+                            for a, b in zip(self.tables, self.projections)], dim=-1)
+        return ranked[..., self.inverse]
+
+    def specification(self):
+        return dict(kind="adaptive", vocab_size=self.vocab_size, hidden=self.hidden,
+                    cutoffs=list(self.cutoffs[:-1]), initial_dim=self.initial_dim,
+                    factor=self.factor, special_ids=list(self.special_ids),
+                    initialization="a_normal_0.02_b_normal_inv_sqrt_dim_v1")
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        order, inverse = state_dict.get(prefix+"order"), state_dict.get(prefix+"inverse")
+        if order is not None and inverse is not None:
+            expected = torch.arange(self.vocab_size, device=order.device)
+            if (order.dtype != torch.int64 or inverse.dtype != torch.int64
+                    or order.shape != expected.shape or inverse.shape != expected.shape
+                    or not torch.equal(order.sort().values, expected)
+                    or not torch.equal(inverse, order.argsort())
+                    or order[:len(self.special_ids)].tolist() != list(self.special_ids)):
+                raise ValueError("Invalid adaptive permutation")
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
+
 class DenseVocabulary(nn.Module):
     def __init__(self, weight: Tensor) -> None:
         super().__init__()

@@ -7,12 +7,15 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
+import sys
+import warnings
 
 import torch
 
 from .config import evaluation_config, ModelConfig
 from .model import CausalTransformer
-from .model import PQVocabulary
+from .model import PQVocabulary, LowRankVocabulary, HashVocabulary, AdaptiveVocabulary
 
 
 def _identity(value: dict, name: str) -> dict:
@@ -109,6 +112,19 @@ def _restore_model(payload):
         # Construct a one-row placeholder, never a full dense vocabulary table.
         model = CausalTransformer(config, 1)
         model.vocabulary = PQVocabulary(state["vocabulary.codebooks"], state["vocabulary.codes"])
+    elif spec.get("kind") in {"low_rank", "hash", "adaptive"}:
+        model = CausalTransformer(config, 1)
+        if spec["kind"] == "low_rank":
+            model.vocabulary = LowRankVocabulary(spec["vocab_size"], spec["hidden"], spec["rank"])
+        elif spec["kind"] == "hash":
+            model.vocabulary = HashVocabulary(spec["vocab_size"], spec["hidden"],
+                spec["buckets"], spec["seeds"], spec["importance_init"])
+        else:
+            # Counts are not needed for inference: the verified stored permutation
+            # is authoritative. Strict state loading below validates both mappings.
+            model.vocabulary = AdaptiveVocabulary(
+                torch.zeros(spec["vocab_size"], dtype=torch.int64), spec["hidden"],
+                spec["cutoffs"], spec["initial_dim"], spec["factor"], spec["special_ids"])
     else:
         raise ValueError("Unsupported vocabulary kind")
     if model.vocabulary.specification() != spec or model.vocabulary.hidden != config.hidden:
@@ -122,6 +138,21 @@ def _load_model_state(model, state):
            or (t.is_floating_point() and not torch.isfinite(t).all()) for n, t in state.items()):
         raise ValueError("Require finite FP32 model tensors and exact assignment dtypes")
     model.load_state_dict(state, strict=True)
+
+
+def _replace_with_retry(temporary: Path, path: Path) -> None:
+    """Retry brief access denials without removing the last atomic checkpoint."""
+    original = None
+    for attempt in range(5):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError as error:
+            if original is None:
+                original = error
+            if attempt == 4:
+                raise original
+            time.sleep(0.05 * 2**attempt)
 
 
 def save_training_checkpoint(path: Path, model: CausalTransformer, training_state: dict,
@@ -145,10 +176,16 @@ def save_training_checkpoint(path: Path, model: CausalTransformer, training_stat
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        _replace_with_retry(temporary, path)
     finally:
+        failing = sys.exc_info()[0] is not None
         if temporary is not None:
-            temporary.unlink(missing_ok=True)
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError as error:
+                if not failing:
+                    raise
+                warnings.warn(f"Checkpoint temporary file retained at {temporary}: {error}")
     return len(data)
 
 
