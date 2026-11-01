@@ -1,5 +1,31 @@
 # Vocabulary and cost in small language models
 
+## Experiment 001 Gate A
+
+`model.py` also provides `LowRankVocabulary`, `HashVocabulary` (learned
+importance weights and deterministic shared components), and `AdaptiveVocabulary`
+(training-frequency bands). Their lookup and full-softmax heads share the same
+effective vectors. Checkpoint loading and storage accounting support these kinds;
+compressed FLOP estimates include representation operations and report omissions.
+The existing dense initializer, model forward, shared optimizer loop, evaluator,
+and dense CLI retain their behavior.
+
+`configs/experiment001.yaml` is a separate proposed 8K pilot recipe with a
+4,865,536-parameter backbone; it does not replace `configs/cfg.yaml`.
+The experiment entry point below runs synthetic forward/backward checks only,
+at 8K and 16K, and cannot launch corpus training. Diagnostics are optional.
+
+```powershell
+& .venv/Scripts/python.exe -B -m pytest -q --basetemp=.tmp/experiment001-tests
+& .venv/Scripts/python.exe -B -m scripts.experiment_001 --diagnostics
+# Optional synthetic CUDA measurements:
+& .venv/Scripts/python.exe -B -m scripts.experiment_001 --device cuda --diagnostics --output results/experiment_001/cuda.json
+```
+
+Measured storage, synthetic diagnostics, literature adaptations and limitations
+are recorded under ignored `results/experiment_001/`. FineWeb comparisons require
+separate authorization; Gate A results do not establish model quality.
+
 This research project investigates vocabulary size, training cost and embedding
 compression in small autoregressive language models. The initial standalone
 workflow trains **dense decoder-only models with tied embeddings** from
