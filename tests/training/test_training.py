@@ -47,6 +47,41 @@ def make_data(documents, config):
                         tokenizer={"sha256": "a"*64}, dataset={"sha256": "b"*64, "split": "train"})
 
 
+@pytest.mark.parametrize('permanent', [False, True])
+def test_checkpoint_access_denied_retry(model, validation, tmp_path, monkeypatch, permanent):
+    import vocab_lm.checkpoint as checkpoint
+    path = tmp_path/'last.pt'
+    metadata = dict(tokenizer={'sha256': 'a'*64}, dataset=validation)
+    checkpoint.save_training_checkpoint(path, model, {'marker': 'old'}, **metadata)
+    previous = path.read_bytes()
+    replace = checkpoint.os.replace
+    errors, delays = [], []
+    def denied(source, destination):
+        assert source.parent.resolve() == path.parent.resolve()
+        assert path.read_bytes() == previous
+        if permanent or len(errors) < 2:
+            error = PermissionError('simulated Windows access denial')
+            errors.append(error)
+            raise error
+        return replace(source, destination)
+    monkeypatch.setattr(checkpoint.os, 'replace', denied)
+    monkeypatch.setattr(checkpoint.time, 'sleep', delays.append)
+    if permanent:
+        with pytest.raises(PermissionError) as caught:
+            checkpoint.save_training_checkpoint(path, model, {'marker': 'new'}, **metadata)
+        assert caught.value is errors[0]
+        assert path.read_bytes() == previous
+        assert len(errors) == 5
+        assert delays == [.05, .1, .2, .4]
+    else:
+        checkpoint.save_training_checkpoint(path, model, {'marker': 'new'}, **metadata)
+        restored, payload = checkpoint.load_training_checkpoint(path)
+        assert payload['training_state']['marker'] == 'new'
+        assert_tree(model.state_dict(), restored.state_dict())
+        assert delays == [.05, .1]
+    assert not list(tmp_path.glob('*.tmp'))
+
+
 @pytest.fixture
 def validation():
     return {"sha256": "c"*64, "split": "validation", "protocol": asdict(FineWebEvaluationConfig()), "bytes": 22}
