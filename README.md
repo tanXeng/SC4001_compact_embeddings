@@ -1,5 +1,20 @@
 # Vocabulary and cost in small language models
 
+## FP32 vocabulary scaling research
+
+Use `scripts/vocab_scaling.py` for the storage-matched 8K Dense versus 16K
+Low-rank IsoFLOPs feasibility experiment. Shared model/training/evaluation and
+atomic checkpoints remain in `vocab_lm/`. Toy and future 16K/32K configurations
+are `configs/vocab_scaling_toy.yaml` and `configs/vocab_scaling_large.yaml`.
+The large file deliberately requires tokenizer/data preparation and is not runnable.
+
+See [the continuation record](docs/VOCAB_SCALING.md) for literature, frozen FLOP
+and archive conventions, verification, run/resume commands and limitations.
+Generated evidence lives under ignored `results/vocab_scaling_toy/`.
+The checked-in [feasibility results](docs/VOCAB_SCALING_RESULTS.md) summarize
+the completed short runs and their measurement limitations.
+Do not launch extended toy or large training without separate authorization.
+
 ## Experiment 001 Gate A
 
 `model.py` also provides `LowRankVocabulary`, `HashVocabulary` (learned

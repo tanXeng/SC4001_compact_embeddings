@@ -1,0 +1,61 @@
+model:
+  layers: 6
+  hidden: 256
+  heads: 4
+  feedforward: 1024
+  context: 512
+  dropout: 0.1
+training:
+  microbatch_size: 2
+  context: 256
+  stride: 128
+  accumulation: 8
+  learning_rate: 0.0003
+  betas:
+  - 0.9
+  - 0.999
+  epsilon: 1.0e-08
+  weight_decay: 0.01
+  clip_norm: 1.0
+  schedule: constant
+  budget_policy: flops
+  budget_limit: 1521851151555792
+  seed: 42
+  fp16: false
+  validation_interval: 0
+  checkpoint_interval: 25
+  checkpoint_seconds: 300
+  flop_estimator: vocab_scaling_v1
+data:
+  root: data/fineweb_v1
+  tier: smoke
+evaluation:
+  protocol: fineweb_document_eos_c256_s128_v1
+  context: 256
+  stride: 128
+  eos_id: 0
+arms:
+  baseline8k:
+    vocab_size: 8192
+    kind: dense
+    tokenizer: data/fineweb_v1/tokenizers
+  vocab16k:
+    vocab_size: 16384
+    kind: low_rank
+    tokenizer: data/fineweb_v1/tokenizers
+baseline: baseline8k
+device: cuda
+output: results/vocab_scaling_full_toy
+evaluation_fractions:
+- 0.25
+- 0.5
+- 0.75
+- 1.0
+diagnostic_fractions:
+- 0.5
+- 1.0
+screen_documents: 8
+confirmation_documents: 8
+threads: 1
+profile_updates: 7
+profile_warmup: 3

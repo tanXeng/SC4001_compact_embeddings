@@ -9,6 +9,7 @@ from dataclasses import asdict
 from dataclasses import dataclass
 from pathlib import Path
 import time
+import copy
 
 import torch
 from torch.nn import functional as F
@@ -24,12 +25,15 @@ def accumulated_backward(model, batches, *, device, scaler, fp16):
     total = sum(batch["tokens"] for batch in batches)
     if total <= 0:
         raise ValueError("Update has no scored targets")
+    nll = 0.0
     for batch in batches:
         with torch.autocast(device.type, dtype=torch.float16, enabled=fp16):
             logits = model(batch["inputs"].to(device))
             loss = F.cross_entropy(logits.flatten(0, 1), batch["targets"].to(device).flatten(),
                                    ignore_index=-100, reduction="sum") / total
         scaler.scale(loss).backward()
+        nll += loss.detach().item()*total
+    return nll
 
 
 def optimizer_update(model, optimizer, scaler, clip_norm):
@@ -45,7 +49,8 @@ def optimizer_update(model, optimizer, scaler, clip_norm):
 
 def train(model, data, config: TrainConfig, *, validation_documents=None,
           validation_identity: dict, output: Path | None = None, resume: dict | None = None,
-          max_attempts: int | None = None, on_update=None) -> dict:
+          max_attempts: int | None = None, on_update=None, should_stop=None,
+          experiment_identity=None, on_boundary=None, on_metrics=None) -> dict:
     """Train at safe update boundaries. max_attempts provides a resumable interruption.
 
     Pass load_training_checkpoint's training_state as resume, with its returned
@@ -76,6 +81,8 @@ def train(model, data, config: TrainConfig, *, validation_documents=None,
     execution = environment(device)
     free_cuda_bytes = torch.cuda.mem_get_info(device)[0] if device.type == "cuda" else None
     if resume is not None:
+        if resume.get("experiment_identity") != experiment_identity:
+            raise ValueError("Experiment identity changed")
         if resume["config"] != asdict(config) or resume["validation_identity"] != validation_identity:
             raise ValueError("Resume configuration or validation identity changed")
         if resume["environment"] != execution:
@@ -105,6 +112,7 @@ def train(model, data, config: TrainConfig, *, validation_documents=None,
                 "best_bpb": best, "environment": execution,
                 "cuda_free_bytes_at_session_start": free_cuda_bytes,
                 "validation_identity": validation_identity,
+                "experiment_identity": experiment_identity,
                 "budget_overshoot": overshoot(counters, config.budget_policy, config.budget_limit),
                 "peak_cuda_allocated_bytes": torch.cuda.max_memory_allocated(device)
                 if device.type == "cuda" else None}
@@ -114,15 +122,31 @@ def train(model, data, config: TrainConfig, *, validation_documents=None,
             save_training_checkpoint(Path(output)/name, model, state(),
                                      tokenizer=data.identity["tokenizer"], dataset=validation_identity)
 
+    last_save = time.perf_counter()
+    estimate = scaling_training_flops if config.flop_estimator == "vocab_scaling_v1" else training_flops
     while budget_value(counters, config.budget_policy) < config.budget_limit:
+        if should_stop is not None and should_stop():
+            break
         if max_attempts is not None and counters.attempted_updates-start_attempts >= max_attempts:
             break
-        active_start = time.perf_counter()
+        cursor_before = copy.deepcopy(data.state_dict())
         batches = [data.batch(config.microbatch_size) for _ in range(config.accumulation)]
+        group_flops = sum(estimate(model, *b["inputs"].shape) for b in batches)
+        if config.budget_policy == "flops" and counters.estimated_flops + group_flops > config.budget_limit:
+            data.load_state_dict(cursor_before)
+            break
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        active_start = time.perf_counter()
         optimizer.zero_grad(set_to_none=True)
         lr = optimizer.param_groups[0]["lr"]
-        accumulated_backward(model, batches, device=device, scaler=scaler, fp16=config.fp16)
+        nll = accumulated_backward(model, batches, device=device, scaler=scaler, fp16=config.fp16)
+        pre_norm = torch.linalg.vector_norm(torch.stack([p.grad.detach().norm() for p in parameters if p.grad is not None])).item() if not config.fp16 else None
+        vocabulary_gradients = {n: p.grad.detach().norm().item() for n, p in model.vocabulary.named_parameters() if p.grad is not None}
         successful = optimizer_update(model, optimizer, scaler, config.clip_norm)
+        post_norm = torch.linalg.vector_norm(torch.stack([p.grad.detach().norm() for p in parameters if p.grad is not None])).item()
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
         counters.attempted_updates += 1
         counters.successful_updates += int(successful)
         counters.skipped_updates += int(not successful)
@@ -131,8 +155,9 @@ def train(model, data, config: TrainConfig, *, validation_documents=None,
             counters.scored_tokens += batch["tokens"]
             counters.raw_bytes += batch["bytes"]
             counters.input_positions += batch["inputs"].numel()
-            counters.estimated_flops += training_flops(model, *batch["inputs"].shape)
-        counters.active_seconds += time.perf_counter()-active_start
+            counters.estimated_flops += estimate(model, *batch["inputs"].shape)
+        update_seconds = time.perf_counter()-active_start
+        counters.active_seconds += update_seconds
         if successful:
             scheduler.step()
             if config.validation_interval and counters.successful_updates % config.validation_interval == 0:
@@ -141,11 +166,31 @@ def train(model, data, config: TrainConfig, *, validation_documents=None,
                 if best is None or result["bpb"] < best:
                     best = result["bpb"]
                     save("best.pt")
+        if on_metrics is not None:
+            counters.wall_seconds = wall_base + time.perf_counter()-wall_start
+            on_metrics({"successful": successful, "lr": lr,
+                       **asdict(counters), "nll": nll,
+                       "loss": nll/sum(b["tokens"] for b in batches),
+                       "pre_clip_norm": pre_norm, "post_clip_norm": post_norm,
+                       "vocabulary_pre_clip_gradients": vocabulary_gradients,
+                       "update_flops": group_flops, "update_seconds": update_seconds,
+                       "update_bytes": sum(b["bytes"] for b in batches),
+                       "update_tokens": sum(b["tokens"] for b in batches),
+                       "parameter_bytes": sum(p.numel()*p.element_size() for p in parameters),
+                       "gradient_bytes": sum(p.grad.numel()*p.grad.element_size() for p in parameters if p.grad is not None),
+                       "optimizer_bytes": __import__('vocab_lm.accounting', fromlist=['tensor_bytes']).tensor_bytes(optimizer.state_dict()),
+                       "examples": [e for b in batches for e in b["examples"]]})
         if on_update is not None:
             on_update({"successful": successful, "lr": lr,
                        "examples": [e for b in batches for e in b["examples"]]})
-        if config.checkpoint_interval and counters.attempted_updates % config.checkpoint_interval == 0:
+        if on_boundary is not None:
+            boundary_state = state()
+            on_boundary(boundary_state, model)
+            best = boundary_state["best_bpb"]
+        if ((config.checkpoint_interval and counters.attempted_updates % config.checkpoint_interval == 0)
+                or (config.checkpoint_seconds and time.perf_counter()-last_save >= config.checkpoint_seconds)):
             save("last.pt")
+            last_save = time.perf_counter()
     save("last.pt")
     return state()
 
@@ -171,11 +216,42 @@ def budget_value(counters: Counters, policy: str) -> int:
         return counters.successful_updates
     if policy == "raw_bytes":
         return counters.raw_bytes
+    if policy == "flops":
+        return counters.estimated_flops
     raise ValueError("Unsupported budget policy")
 
 
 def overshoot(counters: Counters, policy: str, limit: int) -> int:
     return max(0, budget_value(counters, policy) - limit)
+
+
+FLOP_ESTIMATOR_VERSION = "vocab_scaling_v1"
+
+
+def scaling_training_flops(model, batch: int, time: int) -> int:
+    """Graph-specific matrix arithmetic plus 3x forward attention softmax.
+
+    Dense input is a gather. All executed padded/overlapping positions count.
+    Full square attention convention even for causal/fused kernels. See docs.
+    """
+    c, v = model.config, model.vocabulary
+    n, d = batch*time, c.hidden
+    body = 6*n*c.layers*(4*d*d + 2*d*c.feedforward)
+    attention = 12*c.layers*batch*time*time*d + 9*c.layers*batch*c.heads*time*time
+    kind = v.specification()["kind"]
+    if kind == "dense":
+        vocabulary = 6*n*v.vocab_size*d
+    elif kind == "low_rank":
+        vocabulary = 6*n*v.rank*(v.vocab_size+2*d)
+    elif kind == "hash":
+        # Actual vectorized effective-table graph, reconstructed separately in input/output.
+        k, size = len(v.seeds), v.vocab_size
+        vocabulary = 6*n*size*d + (n+size)*d*(5*k-1)
+    elif kind == "adaptive":
+        vocabulary = compressed_vocabulary_flops(v, n)["estimated_flops"]
+    else:
+        raise ValueError("Unsupported scaling representation")
+    return body + attention + vocabulary
 
 
 def training_flops(model, batch: int, time: int) -> int:

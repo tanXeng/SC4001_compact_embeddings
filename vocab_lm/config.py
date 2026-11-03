@@ -54,6 +54,8 @@ class TrainConfig:
     fp16: bool = False
     validation_interval: int = 0
     checkpoint_interval: int = 0
+    flop_estimator: str = "legacy"
+    checkpoint_seconds: float = 0
 
     def __post_init__(self):
         for name in ("microbatch_size", "context", "stride", "accumulation",
@@ -65,8 +67,10 @@ class TrainConfig:
                 raise ValueError(f"{name} must be a nonnegative integer")
         if self.stride > self.context or self.schedule not in {"constant", "linear", "cosine"}:
             raise ValueError("Invalid training stride/schedule")
-        if self.budget_policy not in {"optimizer_steps", "raw_bytes"}:
+        if self.budget_policy not in {"optimizer_steps", "raw_bytes", "flops"}:
             raise ValueError("Unsupported budget policy")
+        if self.flop_estimator not in {"legacy", "vocab_scaling_v1"} or self.checkpoint_seconds < 0:
+            raise ValueError("Invalid estimator/checkpoint interval")
         for name in ("learning_rate", "epsilon", "clip_norm", "weight_decay"):
             value = getattr(self, name)
             if isinstance(value, bool) or not math.isfinite(value) or value < 0:

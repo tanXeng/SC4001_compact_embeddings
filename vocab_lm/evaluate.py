@@ -61,7 +61,7 @@ def bits_per_byte(nll: float, raw_bytes: int) -> float:
 
 @torch.no_grad()
 def evaluate(model, documents: Iterable[Document], config,
-             *, expected_bytes: int | None = None) -> dict:
+             *, expected_bytes: int | None = None, frequency_groups=None) -> dict:
     """FP32 forward/CE, FP64 loss reduction, complete per-document coverage."""
     if model.config.context < config.context:
         raise ValueError("Model context is shorter than the scoring context")
@@ -71,6 +71,8 @@ def evaluate(model, documents: Iterable[Document], config,
     device = next(model.parameters()).device
     previous = model.training
     nll, tokens, raw_bytes, document_count = 0.0, 0, 0, 0
+    correct = 0
+    grouped = {}
     model.eval()
     try:
         with torch.autocast(device.type, enabled=False):
@@ -84,6 +86,16 @@ def evaluate(model, documents: Iterable[Document], config,
                     if not torch.isfinite(losses).all():
                         raise FloatingPointError("Nonfinite validation loss")
                     nll += losses.sum().item()
+                    matches = logits.argmax(-1) == targets
+                    correct += matches.sum().item()
+                    if frequency_groups is not None:
+                        memberships = frequency_groups.to(device)[targets]
+                        for band in memberships.unique().tolist():
+                            mask = memberships == band
+                            row = grouped.setdefault(str(band), {"nll": 0., "targets": 0, "correct": 0})
+                            row["nll"] += losses[mask].sum().item()
+                            row["targets"] += mask.sum().item()
+                            row["correct"] += matches[mask].sum().item()
                     count += len(targets)
                     byte_count += sum(window.byte_lengths[window.score_from:])
                 if (count, byte_count) != (len(document.ids)-1, sum(document.byte_lengths)):
@@ -96,5 +108,6 @@ def evaluate(model, documents: Iterable[Document], config,
     if expected_bytes is not None and raw_bytes != expected_bytes:
         raise ValueError(f"Validation byte coverage {raw_bytes} != expected {expected_bytes}")
     return {"bpb": bits_per_byte(nll, raw_bytes), "nll": nll, "tokens": tokens,
+            "accuracy": correct/tokens, "frequency_metrics": grouped,
             "bytes": raw_bytes, "documents": document_count, "token_nll": nll/tokens,
             "protocol": asdict(config)}
