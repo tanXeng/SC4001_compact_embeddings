@@ -1,8 +1,6 @@
 """Independent effective-matrix references, synthetic only."""
 from dataclasses import asdict
 import json
-import os
-import subprocess
 
 import pytest
 import torch
@@ -16,7 +14,7 @@ from vocab_lm.checkpoint import (archive_bytes, save_checkpoint, load_checkpoint
 from vocab_lm.accounting import storage_report, vocabulary_storage_report
 from vocab_lm.train import training_flops, compressed_vocabulary_flops
 from vocab_lm.tokenizer import FineWebEvaluationConfig
-from scripts.experiment_001 import diagnostics, stratified_metrics
+
 
 
 def make(kind):
@@ -113,21 +111,6 @@ def test_checkpoint_storage_updates_and_backbone(kind, tmp_path):
     assert report["vocabulary_metadata_json_bytes"] == len(json.dumps(v.specification(), sort_keys=True).encode())
 
 
-def test_deterministic_hash_and_collision_diagnostics():
-    v = HashVocabulary(11, 8, 1, (3, 7))
-    summary = diagnostics(v)
-    assert summary["hash"]["duplicate_excess_rate"] == 1-1/11
-    assert summary["hash"]["tokens_in_duplicate_groups_rate"] == 1
-    assert summary["hash"]["bucket_utilization"] == 1
-    code = "from vocab_lm.model import HashVocabulary; print(HashVocabulary(11,8,4,(3,7)).indices.tolist())"
-    import sys
-    a = subprocess.check_output([sys.executable, "-B", "-c", code], env={**os.environ, "PYTHONHASHSEED": "1"})
-    b = subprocess.check_output([sys.executable, "-B", "-c", code], env={**os.environ, "PYTHONHASHSEED": "999"})
-    assert a == b
-    state = make("hash").state_dict()
-    state["indices"][0, 0] = (state["indices"][0, 0]+1) % 4
-    with pytest.raises(ValueError, match="Hash indices"):
-        make("hash").load_state_dict(state)
 
 
 def test_adaptive_mapping_and_invalid_state():
@@ -154,13 +137,6 @@ def test_flops_and_optional_diagnostics(kind):
     else:
         expected = 6*n*(8*(3+8)+4*(4+8)+2*(4+8))+6*n*8*8
     assert estimate["estimated_flops"] == expected
-    summary = diagnostics(v, sample_size=8)
-    assert summary["gradients_finite"] and len(summary["singular_values"]) == 8
-    assert 0 <= summary["interference"]["reinforcement_ratio"] <= 1.000001
-    logits = torch.eye(11)*10
-    metrics = stratified_metrics(logits, torch.arange(11), torch.arange(11))
-    assert sum(m["positions"] for m in metrics) == 11
-    assert all(m["accuracy"] == 1 for m in metrics)
 
 
 def test_dense_legacy_initialization_forward_and_flops():

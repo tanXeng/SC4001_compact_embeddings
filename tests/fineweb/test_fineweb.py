@@ -50,6 +50,66 @@ def test_source_ids():
         source_id("dataset", "main", "path", 0)
 
 
+def test_large_validation_protocol_complete_context_coverage():
+    cfg=FineWebEvaluationConfig(protocol='fineweb_document_eos_c1024_s512_v2',context=1024,stride=512)
+    ids=(0,)+tuple(1+i%17 for i in range(2600))+(0,)
+    doc=Document(ids,(0,)+(1,)*2600+(0,),'a'*64)
+    slices=list(windows(doc,cfg))
+    assert max(len(w.inputs) for w in slices)==1024
+    assert sum(len(w.targets)-w.score_from for w in slices)==len(ids)-1
+    assert sum(sum(w.byte_lengths[w.score_from:]) for w in slices)==2600
+    assert [i for w in slices for i in range(w.first_target,w.first_target+len(w.targets)-w.score_from)]==list(range(1,len(ids)))
+    with pytest.raises(ValueError):
+        FineWebEvaluationConfig(protocol='fineweb_document_eos_c256_s128_v1',context=1024,stride=512)
+
+
+def test_scaling_generation_full_verification_and_corruption(pair,raw_fixture,tmp_path,monkeypatch):
+    import vocab_lm.fineweb as fw
+    directory=tmp_path/'tokenizers'; pair.save(directory)
+    fw.write_json(directory/'protocol.json',dict(artifacts={n:fw.file_hash(directory/n) for n in ('base.json','expanded.json','nested.json')}))
+    config=dict(selection=dict(seed=42),source=dict(dataset='HuggingFaceFW/fineweb',configuration='sample-10BT',revision='a'*40,files=[]))
+    fw.write_json(tmp_path/'source_manifest.json',{})
+    records=candidates(raw_fixture); split_at=len(records)-2
+    offset=0
+    with (tmp_path/'raw.bin').open('wb') as stream:
+        for r,raw in zip(records,raw_fixture):
+            r['raw_offset']=offset;stream.write(raw);offset+=len(raw)
+    selection=dict(train=records[:split_at],validation=records[split_at:],settings=config['selection'],
+                   raw_sha256=fw.file_hash(tmp_path/'raw.bin'),source_manifest_sha256=fw.file_hash(tmp_path/'source_manifest.json'))
+    for split in ('train','validation'):
+        for i,r in enumerate(selection[split]): r['selection_order']=i
+    fw.write_json(tmp_path/'selection.json',selection)
+    monkeypatch.setattr(fw,'check_source',lambda *args:None)
+    for expanded,tok in ((False,pair.base),(True,pair.expanded)):
+        size=tok.get_vocab_size()
+        for split in ('train','validation'):
+            original=write_shards(tmp_path/'shards'/str(size)/split,RawDocuments(tmp_path,selection[split]),selection[split],pair,
+                         expanded=expanded,tokenizer=fw.tokenizer_identity(directory,expanded),dataset=fw.dataset_identity(tmp_path,split),max_tokens=20000)
+            batched=write_shards(tmp_path/'batched'/str(size)/split,RawDocuments(tmp_path,selection[split]),selection[split],pair,
+                         expanded=expanded,tokenizer=fw.tokenizer_identity(directory,expanded),dataset=fw.dataset_identity(tmp_path,split),max_tokens=20000,encode_batch_size=3)
+            assert original==batched
+    result=fw.verify_scaling_data(tmp_path,directory,config)
+    assert not result['sealed_test_access']
+    assert all(c['train']['documents']==split_at for c in result['coverage'].values())
+    result['preparation_config']=config
+    fw.write_json(tmp_path/'preparation.json',result)
+    before=(tmp_path/'raw.bin').stat().st_mtime_ns
+    monkeypatch.setattr(fw,'download_source',lambda *args:pytest.fail('Matching generation must not download'))
+    assert fw.prepare_scaling_data(tmp_path,directory,config)==result
+    assert (tmp_path/'raw.bin').stat().st_mtime_ns==before
+    shard=next((tmp_path/'shards').rglob('*.bin'))
+    payload=shard.read_bytes(); shard.write_bytes(payload[:-1]+bytes([payload[-1]^1]))
+    with pytest.raises(ValueError,match='hash'):
+        fw.prepare_scaling_data(tmp_path,directory,config)
+
+
+def test_manifest_bytes_are_platform_independent(tmp_path):
+    from vocab_lm.runtime import write_json
+    path=tmp_path/'manifest.json'
+    write_json(path,dict(text='Unicode \u4f60\u597d'))
+    assert path.read_bytes()==(json.dumps(dict(text='Unicode \u4f60\u597d'),ensure_ascii=False,sort_keys=True,indent=2)+'\n').replace('\n','\r\n').encode()
+
+
 def test_selection_deterministic_nested_append_and_disjoint():
     chunks = [candidates([f"Document {i}".encode() for i in range(400)])]
     settings = dict(seed=42, validation_modulus=4, smoke_bytes=100, pilot_bytes=1000, validation_bytes=100)

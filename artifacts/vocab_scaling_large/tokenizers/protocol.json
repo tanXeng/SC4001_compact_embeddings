@@ -1,0 +1,37 @@
+{
+  "artifacts": {
+    "base.json": "cf148983e4f5838d445c0eb0ccc6793997d03da9509910298b9094b29b1eb38c",
+    "expanded.json": "1192955ffd00b6723043a20d599defbe863ed1a48ea1612d9f47c1dbc1e2323b",
+    "nested.json": "c8a9dbbd0d78cd8ce5b6a1120acf3b4e170a907c2853238e335f6198f67bde5c"
+  },
+  "code": {
+    "git_commit": "d100702ece6df262d40c1a3e7fa6e65084c4aabf",
+    "source_sha256": "9686d5e9aab387ed2e2966a55fbeddae3fe0730f57a3f7fb02e1fe17fc49355f"
+  },
+  "config": {
+    "add_prefix_space": false,
+    "base_vocab_size": 16384,
+    "eos_token": "<|endoftext|>",
+    "expanded_vocab_size": 32768,
+    "min_frequency": 2,
+    "parallelism": false,
+    "use_regex": true
+  },
+  "determinism": "Two independent complete training-only fits identical parsed artifacts; TOKENIZERS_PARALLELISM=false",
+  "protocol": "fineweb_train_bpe32k_prefix16k_v1",
+  "selection": {
+    "actual_bytes": 200000346,
+    "documents": 65182,
+    "ordered_sample_sha256": "82f941e75dba2498e5ac54a42ef1e1532c5ccb12106ff1a8df3705ab75585fd1",
+    "seed": 42,
+    "selection_sha256": "b809d1166b24ae23bd1e81a99c35bb7f23b5b2d2c81f6787965259b4f6b9ef0e",
+    "training_bytes": 200000000,
+    "validation_modulus": 16
+  },
+  "source": {
+    "dataset": "HuggingFaceFW/fineweb",
+    "file": "sample/10BT/014_00000.parquet",
+    "revision": "9bb295ddab0e05d785b879661af7260fed5140fc"
+  },
+  "tokenizers_version": "0.22.1"
+}

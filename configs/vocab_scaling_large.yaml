@@ -1,16 +1,15 @@
-# Template only: budget is a placeholder; prepare 16K/32K artifacts and freeze production budget before use.
 model:
   layers: 10
   hidden: 512
   heads: 8
   feedforward: 2048
-  context: 512
+  context: 1024
   dropout: 0.1
 training:
   microbatch_size: 2
-  context: 256
-  stride: 128
-  accumulation: 8
+  context: 1024
+  stride: 512
+  accumulation: 4
   learning_rate: 0.0003
   betas:
   - 0.9
@@ -20,35 +19,43 @@ training:
   clip_norm: 1.0
   schedule: constant
   budget_policy: flops
-  budget_limit: 35000000000000
+  budget_limit: 250000000000000000
   seed: 42
   fp16: false
   validation_interval: 0
-  checkpoint_interval: 25
+  checkpoint_interval: 0
   checkpoint_seconds: 300
   flop_estimator: vocab_scaling_v1
 data:
-  root: data/REQUIRES_PREPARED_LARGE_CORPUS
+  root: data/vocab_scaling_large_final
   tier: pilot
 evaluation:
-  protocol: fineweb_document_eos_c256_s128_v1
-  context: 256
-  stride: 128
+  protocol: fineweb_document_eos_c1024_s512_v2
+  context: 1024
+  stride: 512
   eos_id: 0
 arms:
   baseline16k:
     vocab_size: 16384
     kind: dense
-    tokenizer: null
-  vocab32k:
+    tokenizer: artifacts/vocab_scaling_large/tokenizers
+  dense32k:
+    vocab_size: 32768
+    kind: dense
+    tokenizer: artifacts/vocab_scaling_large/tokenizers
+  lowrank32k:
     vocab_size: 32768
     kind: low_rank
-    tokenizer: null
-  vocab64k:
-    vocab_size: 65536
-    kind: low_rank
-    tokenizer: null
-    optional: true
+    tokenizer: artifacts/vocab_scaling_large/tokenizers
+    rank: 252
+  adaptive32k:
+    vocab_size: 32768
+    kind: adaptive
+    allocation_policy: three_band_factor4_middle_quarter_grid256_v1
+    tokenizer: artifacts/vocab_scaling_large/tokenizers
+    cutoffs:
+    - 12544
+    - 20736
 baseline: baseline16k
 device: cuda
 output: results/vocab_scaling_large
@@ -60,8 +67,48 @@ evaluation_fractions:
 diagnostic_fractions:
 - 0.5
 - 1.0
-screen_documents: 8
-confirmation_documents: 8
+screen_documents: 256
+confirmation_documents: 256
 threads: 1
-profile_updates: 7
-profile_warmup: 3
+profile_updates: 3
+profile_warmup: 1
+protocol:
+  study: large_v1
+  phase: frozen
+  non_repeating: true
+  context_frozen: true
+  job_seconds: 21600
+  stop_margin_seconds: 600
+  training_documents: null
+  secondary_status: document-disjoint secondary; not used for configuration selection
+  target_vram_gib: 32
+  peak_limit_gib: 24
+  preparation:
+    protocol: fineweb_large_v1
+    source:
+      dataset: HuggingFaceFW/fineweb
+      configuration: sample-10BT
+      revision: 9bb295ddab0e05d785b879661af7260fed5140fc
+      files:
+      - path: sample/10BT/014_00000.parquet
+        size: 574962194
+        sha256: 7168f92a680b3e28155a6b654ebf235b19bf4d2ab35f91dbab3fb47cbd629a8e
+      - path: sample/10BT/013_00000.parquet
+        size: 2148275619
+        sha256: 48aa6144f665f98139a14cbc1cc28b976c895efc4e4c1df381cff362dbe96993
+    download_limit_bytes: 3000000000
+    disk_estimate_bytes: 16000000000
+    selection:
+      seed: 42
+      validation_modulus: 16
+      smoke_bytes: 2000000
+      pilot_bytes: 2500000000
+      validation_bytes: 10000000
+    shards:
+      max_tokens: 2000000
+      encode_batch_size: 128
+  candidate_budgets:
+  - 250000000000000000
+  - 300000000000000000
+  data_supported_budget: 250000000000000000
+  data_margin: 1.2

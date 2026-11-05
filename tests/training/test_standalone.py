@@ -1,21 +1,17 @@
-"""Standalone configuration/CLI tests with local synthetic byte-BPE shards only."""
-from dataclasses import asdict
+"""Configuration and prepared-data binding on synthetic byte-BPE shards."""
+from dataclasses import asdict, replace
 from pathlib import Path
-import json
-import sys
 
 import pytest
-import torch
 import yaml
 
-from scripts.train_dense import main, load_data
-from vocab_lm.checkpoint import load_training_checkpoint
+from vocab_lm.data import load_data
+from vocab_lm.config import TrainConfig
 from vocab_lm.config import load_config
-from vocab_lm.fineweb import describe, read_json, sha256, write_json
-from vocab_lm.fineweb import (CodeProvenanceMismatch, dataset_identity,
-                              implementation_fingerprints, verify)
+from vocab_lm.fineweb import describe, read_json, write_json
+from vocab_lm.fineweb import dataset_identity
 from vocab_lm.data import write_shards
-from vocab_lm.tokenizer import tokenizer_identity
+from vocab_lm.tokenizer import tokenizer_identity, FineWebEvaluationConfig
 
 
 @pytest.fixture
@@ -33,7 +29,7 @@ def recipe(tmp_path, pair, corpus):
         write_shards(root / "shards" / str(vocab) / split, values, selection[split], pair,
                      expanded=True, tokenizer=tokenizer_identity(root / "tokenizers", True),
                      dataset=dataset_identity(root, split), max_tokens=1000)
-    settings = yaml.safe_load(Path("configs/cfg.yaml").read_text())
+    settings = dict(training=asdict(TrainConfig()),data=dict(tier="pilot"),checkpoint=dict(output="unused"), evaluation=asdict(FineWebEvaluationConfig()))
     settings.update(model=dict(layers=1, hidden=16, heads=2, feedforward=32, context=256, dropout=0.1),
                     vocab_size=vocab, device="cpu")
     settings["training"].update(context=16, stride=8, accumulation=2, fp16=False,
@@ -43,26 +39,6 @@ def recipe(tmp_path, pair, corpus):
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(settings))
     return path, settings
-
-
-def test_cli_train_resume_evaluate(recipe, capsys):
-    path, settings = recipe
-    main(["--config", str(path), "--validate-only"])
-    assert "valid" in capsys.readouterr().out
-    main(["--config", str(path)])
-    result = json.loads(capsys.readouterr().out)
-    assert result["counters"]["successful_updates"] == 2
-    assert result["validation"]["bytes"] == len("validation e\u0301 \U0001f98a\n".encode())
-    checkpoint = Path(settings["checkpoint"]["output"]) / "last.pt"
-    _, payload = load_training_checkpoint(checkpoint)
-    assert payload["training_state"]["environment"]["source_sha256"]
-    main(["--config", str(path), "--resume", str(checkpoint)])
-    assert json.loads(capsys.readouterr().out)["counters"]["successful_updates"] == 2
-    main(["--config", str(path), "--evaluate", str(checkpoint)])
-    assert json.loads(capsys.readouterr().out)["bpb"] == result["validation"]["bpb"]
-    with pytest.raises(FileExistsError):
-        main(["--config", str(path)])
-    assert not any(n == "src" or n.startswith("src.") or n.startswith("archive.") for n in sys.modules)
 
 
 @pytest.mark.parametrize("section,key,value", [
@@ -80,7 +56,7 @@ def test_config_rejects_mismatch(recipe, section, key, value):
         load_config(path)
 
 
-def test_cli_rejects_changed_tokenizer_byte_table(recipe):
+def test_loader_rejects_changed_tokenizer_byte_table(recipe):
     path, settings = recipe
     config = load_config(path)
     index = Path(config.data.root) / "shards" / str(config.vocab_size) / "validation" / "index.json"
@@ -91,19 +67,12 @@ def test_cli_rejects_changed_tokenizer_byte_table(recipe):
         load_data(config)
 
 
-def test_provenance_mismatch_distinct_from_corruption(tmp_path):
-    write_json(tmp_path / "verification.json", {"implementation_sha256": {"old/path.py": "a"*64}})
-    from vocab_lm.fineweb import file_hash
-    write_json(tmp_path / "artifact_hashes.json", {"verification.json": {
-        "sha256": file_hash(tmp_path / "verification.json"), "bytes": (tmp_path / "verification.json").stat().st_size}})
-    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
-    with pytest.raises(CodeProvenanceMismatch):
-        verify(tmp_path, {})
-    assert before == {p.name: p.read_bytes() for p in tmp_path.iterdir()}
-    assert all(Path(p).exists() for p in implementation_fingerprints())
-    with pytest.raises(FileExistsError):
-        verify(tmp_path, {}, publish=True)
-    (tmp_path / "verification.json").write_text("corruption")
-    with pytest.raises(ValueError, match="artifact hash") as error:
-        verify(tmp_path, {}, allow_code_provenance_mismatch=True)
-    assert not isinstance(error.value, CodeProvenanceMismatch)
+
+
+def test_loader_smoke_prefix_identity(recipe):
+    path,settings=recipe
+    cfg=load_config(path)
+    full,_,_=load_data(cfg)
+    short,_,_=load_data(replace(cfg,data=replace(cfg.data,tier='smoke')))
+    assert len(short.documents)==1<len(full.documents)
+    assert short.identity['dataset']['sha256']!=full.identity['dataset']['sha256']

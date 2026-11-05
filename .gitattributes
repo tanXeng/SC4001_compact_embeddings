@@ -1,0 +1,3 @@
+# Frozen tokenizer/protocol identities are byte hashes; never rewrite line endings.
+artifacts/vocab_scaling_large/** -text whitespace=cr-at-eol
+pyproject.toml -text whitespace=cr-at-eol

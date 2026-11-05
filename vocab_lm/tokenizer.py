@@ -171,11 +171,13 @@ class FineWebEvaluationConfig:
     eos_id: int = 0
 
     def __post_init__(self):
-        if (self.protocol != "fineweb_document_eos_c256_s128_v1"
-                or type(self.context) is not int or self.context != 256
-                or type(self.stride) is not int or self.stride != 128
+        protocols = {"fineweb_document_eos_c256_s128_v1": (256,128),
+                     "fineweb_document_eos_c1024_s512_v2": (1024,512)}
+        if (self.protocol not in protocols
+                or type(self.context) is not int or type(self.stride) is not int
+                or (self.context,self.stride) != protocols.get(self.protocol)
                 or type(self.eos_id) is not int or self.eos_id != 0):
-            raise ValueError("FineWeb v1 requires context 256, stride 128, EOS 0")
+            raise ValueError("Require a versioned FineWeb context/stride pair and EOS 0")
 
 
 def train_family(raw_train, directory: Path, config: dict) -> NestedBPE:

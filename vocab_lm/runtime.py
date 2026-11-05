@@ -26,8 +26,9 @@ def file_hash(path: Path) -> str:
 
 
 def write_json(path: Path, value) -> None:
-    Path(path).write_text(json.dumps(value, ensure_ascii=False, sort_keys=True,
-                                     indent=2) + "\n", encoding="utf-8")
+    # Preserve the existing Windows-produced manifest bytes on every host.
+    with Path(path).open('w',encoding='utf-8',newline='\r\n') as stream:
+        stream.write(json.dumps(value,ensure_ascii=False,sort_keys=True,indent=2)+'\n')
 
 
 def read_json(path: Path):
@@ -72,7 +73,7 @@ def source_identity() -> dict:
     digest = hashlib.sha256()
     paths = list((root / "vocab_lm").glob("*.py")) + list((root / "scripts").glob("*.py"))
     for path in sorted(paths):
-        digest.update(path.relative_to(root).as_posix().encode() + b"\0" + path.read_bytes() + b"\0")
+        digest.update(path.relative_to(root).as_posix().encode() + b"\0" + path.read_bytes().replace(b'\r\n',b'\n') + b"\0")
     return {"git_commit": commit, "source_sha256": digest.hexdigest()}
 
 

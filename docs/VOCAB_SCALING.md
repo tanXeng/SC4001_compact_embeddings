@@ -1,163 +1,190 @@
-# FP32 vocabulary scaling: continuation record
+# Frozen large vocabulary-scaling study
 
-Dedicated branch: `research/vocab-scaling-fp32-isoflops`. Initial main was clean at
-`0c6b54e`. Its regression collection failed because `scripts/experiment_001.py`
-was absent. Restored that file from historical commit `ebde308`; baseline then
-passed 93 tests. Existing Experiment 001 and overnight artifacts are untouched.
+Run one exact owner-approved commit from the repository root. Source content, configuration, project dependencies, tokenizers and data hashes are enforced by [the frozen input protocol](../artifacts/vocab_scaling_large/protocol.json). This package prepares and verifies the study; no substantive large-model training or push was performed during preparation. The actual 32 GB server preflight is still mandatory.
 
-## Scientific scope
+## Scientific protocol
 
-Compare the complete practical strategy (vocabulary size plus representation),
-not the isolated causal effect of vocabulary size. Both primary arms train from
-initialization with the same 4,865,536-parameter backbone, FP32 (including logits
-and loss), TF32 disabled, AdamW recipe, shuffled raw-document order and seed 42.
-No quality inference is justified by this short feasibility study.
+Question: at fixed estimated compute, does 16K to 32K improve raw-byte BPB, and can established compressed representations preserve that benefit near the 16K Dense vocabulary-storage ceiling?
 
-## Frozen compute convention: vocab_scaling_v1
+- **2.5e17 estimated FLOPs per arm**, unchanged `vocab_scaling_v1`, complete updates only; no wraparound or budget reset across jobs.
+- Common FP32 Transformer: **10 layers, hidden 512, 8 heads, FFN 2048, context/position capacity 1024**, dropout .1; **32,033,792 backbone parameters** excluding vocabulary.
+- Microbatch **2**, accumulation **4**, training stride **512**: 8,192 executed positions per full group; actual scored targets vary with document length/padding.
+- AdamW LR .0003, betas .9/.999, epsilon 1e-8, weight decay .01, clip norm 1, constant LR, seed **42**, FP32 including logits/loss, TF32 disabled.
+- Validation **fineweb_document_eos_c1024_s512_v2**: context1024/stride512, every intended text/closing-EOS target once, document-local context, exact raw UTF-8 byte BPB denominator. Same ordered raw validation documents for both tokenizers. Screen [0,256); secondary [256,512).
+- Screening at initialization and 25/50/75/100% budget, with final fitting boundary when necessary; secondary once after all four arms finish. Diagnostics at 50% and endpoint, outside active update timing.
+- Diagnostics: Dense norms/variance/sampled spectrum/frequency quality; Low-rank effective spectrum/rank, factors/gradients/conditioning and frequency quality; Adaptive native-band quality/mass, ranks, table/projection norms/gradients/conditioning and allocation. No Hash arm or Hash-specific diagnostics.
 
-Primary papers reviewed before implementation:
+The small FP32 study motivated larger vocabularies and practical Low-rank/Adaptive baselines. Its corrected Adaptive allocation improved substantially over an accidentally underallocated configuration; the large pipeline therefore automatically enforces capacity utilization. Hash performed poorly and is excluded. Toy results used a different evaluation protocol, a small backbone, one seed and reused tiny validation subsets; no retroactive cross-protocol comparison or convergence claim is made. This budget is a comparative research choice around ten scored tokens/total parameter for the storage-matched arms, not a mandatory compute-optimal pretraining target.
 
-- Tao et al., [Scaling Laws with Vocabulary](https://arxiv.org/html/2407.13623v3),
-  section 3 equation 5 uses approximately `6(N_nv + V*d)*D`; tokenization changes D.
-- Hoffmann et al., [Training Compute-Optimal Large Language Models](https://arxiv.org/html/2203.15556v1#A6),
-  Appendix F counts embedding, QKV, attention products, attention softmax,
-  FFN and logits; multiply-add costs two and backward is twice forward.
+| Arm | Vocabulary | Structure | Vocabulary parameters | Archive bytes | Ceiling use | Total parameters |
+|---|---:|---|---:|---:|---:|---:|
+| adaptive32k | 32768 | Cutoffs12544/20736; widths512/128/32 | 8,200,192 | 33,327,936 | 99.3211% | 40,233,984 |
+| baseline16k | 16384 | Dense tied ceiling | 8,388,608 | 33,555,740 | 100.0000% | 40,422,400 |
+| dense32k | 32768 | Dense tied; explicitly out of storage budget | 16,777,216 | 67,110,172 | 199.9961% | 48,811,008 |
+| lowrank32k | 32768 | Rank252 exact tied AB | 8,386,560 | 33,547,800 | 99.9763% | 40,420,352 |
 
-We adopt the latter's explicit operation approach, adapted to the actual tied
-graph. For B rows, T executed positions, n=B*T, d width, f FFN, L layers, H heads:
+The 16K Dense standalone FP32 serialized archive is the exact ceiling. Low-rank rank252 fits; rank253 does not. Adaptive keeps three frequency bands, factor four, fixed middle V/4 and the largest fitting head on a 256-type grid. Nearby allocations, per-band parameters/buffers and actual archives are frozen in the protocol. Both compressed methods exceed 95%; no padding parameters or validation-selected capacity. Complete-training counts determine only the frequency ordering (EOS first, count descending, ID tie-break); count/order digests and band mass are frozen.
 
-```
-backbone matrix training = 6*n*L*(4*d*d + 2*d*f)
-attention products      = 12*L*B*T*T*d
-attention softmax       = 9*L*B*H*T*T
-dense vocabulary        = 6*n*V*d
-low-rank vocabulary     = 6*n*r*(V + 2*d)
-```
+FLOPs include GEMM forward/backward, full-square attention products/softmax, executed padded/overlapping positions, Low-rank input projection and Adaptive maximum-band input bound. Excludes loss softmax, optimizer, LayerNorm/GELU, gathers/allocation, diagnostics and I/O. Partial profiler totals are coverage evidence, never substituted into the budget estimator.
 
-Dense input is an indexed gather, not a one-hot dense multiplication; no fictitious
-input GEMM is charged. Low-rank has three differentiable GEMMs (input A[i]B and
-two output products), each charged forward plus both gradients. Tying counts
-storage once but does not remove either path's work. Full square attention is
-charged, including masked cells, regardless of fused causal implementation.
-Padding and overlapping context count whenever executed. Short rows count their
-actual padded batch shape. Bias, norms, GELU, dropout, indexing/scatter, loss/output
-softmax, optimizer and clipping are excluded. Attention softmax is included using
-Appendix F's forward-times-three approximation. Output CE is outside both papers'
-explicit matrix convention; this omission matters more for very large V.
+## Frozen data and tokenizer provenance
 
-Hash support in the estimator follows the *current* reconstructed-table graph:
-`6*n*V*d + (n+V)*d*(5*k-1)` (sum/reduction approximation). Adaptive uses the existing
-full-band output estimate plus conservative maximum-band input bound. Those are
-infrastructure support, not primary arms or validated scaling comparisons here.
+FineWeb source: HuggingFaceFW/fineweb revision **9bb295ddab0e05d785b879661af7260fed5140fc**, sample-10BT, pinned 014 then 013 parquet files (2.723 GB download on a fresh clone). Seed42 domain-separated order/split hashes, modulus16 and global exact-text dedup; all reserved validation-bucket documents are excluded from training. The extended ordered raw train prefix and original validation selection are preserved. No sealed-test reader is provided.
 
-This is an analytical convention, not exact hardware operations. PyTorch profiler
-records only supported operators; SDPA and backward coverage can be incomplete.
-`profiler.json` reports the observed count separately. Profile timing uses a second
-session outside profiler, after warmed full accumulation/clipping/AdamW updates.
+The fixed tokenizers use the established byte-level nested BPE method: train maximum32K and derive its16K prefix from the exact 65,182-document, 200,000,346-byte training-only prefix; tokenizers0.22.1, min frequency2, complete byte alphabet, regex ByteLevel, no synthetic prefix space/normalization, EOS ID0. Literal EOS spelling stays ordinary text. Two independent fits matched IDs/merges. The 16K artifact matches the earlier 16K tokenizer. Data expansion did not retrain or modify either tokenizer.
 
-Complete groups are reserved before any forward/backward. Rejected groups restore
-the cursor. Failed/skipped groups consume exposure and compute but never successful
-updates. Counters use Python integers and checkpoint without rounding. No final
-partial update or altered accumulation is allowed.
+| Vocabulary | Train documents | Unique train bytes | Scored corpus targets incl EOS | Validation documents / bytes |
+|---|---:|---:|---:|---:|
+| 16384 | 813,238 | 2,500,000,732 | 604,206,923 | 3,219 / 10,001,247 |
+| 32768 | 813,238 | 2,500,000,732 | 566,201,245 | 3,219 / 10,001,247 |
 
-## Frozen storage convention: standalone_torch_save_v1
+`prepare` verifies every document reconstruction, EOS boundaries, complete ordered coverage and train/validation disjointness. Tokenizer construction-prefix provenance is verified against the expanded train selection. The final seeded-permutation shape walks verify every arm through **3e17 FLOPs**, providing at least **20% headroom** above the training budget. No quality metric selected any input. Full hashes and allocation details are in the small input protocol; generated receipts remain ignored.
 
-Use the existing `vocabulary_storage_report`: actual torch.save BytesIO archive of
-`{specification,state_dict}`, CPU contiguous clones, all trainable tensors,
-persistent buffers, metadata and ZIP/pickle overhead. Tied tensors count once.
-The 8K dense archive is the ceiling (8,389,916 bytes in this environment).
-Binary search actual archives for the largest rank <= min(V,d) before quality.
-Rank 126 fits; rank 127 does not. Do not pad the archive. PyTorch-version archive
-overhead can differ: manifests pin the environment and measurement convention.
+| Tokenizer artifact | SHA-256 |
+|---|---|
+| base.json | `cf148983e4f5838d445c0eb0ccc6793997d03da9509910298b9094b29b1eb38c` |
+| expanded.json | `1192955ffd00b6723043a20d599defbe863ed1a48ea1612d9f47c1dbc1e2323b` |
+| nested.json | `c8a9dbbd0d78cd8ce5b6a1120acf3b4e170a907c2853238e335f6198f67bde5c` |
+| protocol.json | `455ca357ef2808f061f7b602b57478edc863aa26cb687afc575b1aaad3b5feea` |
 
-Parameter, gradient and initialized AdamW tensor memory are recorded separately.
-Model inference archive includes backbone and required identities. CUDA allocated,
-reserved and peaks include activations/temporaries; a peak is not a decomposition.
-Host peak RSS and isolated transient memory are currently null rather than guessed.
+Total Git tokenizer/input-protocol artifacts: **3,523,620 bytes**. Manifest JSON explicitly preserves the established CRLF bytes on all OSes; Git attributes disable rewriting these artifacts. Python source identity normalizes CRLF/LF for Windows/Linux checkout compatibility.
 
-## Data and validation
+## Environment and operator commands
 
-Use only existing FineWeb 8K/16K artifacts. Preflight checks shard integrity and
-tokenizer binding through the shared loader, then reconstructs document bytes and
-verifies SHA256. It compares ordered raw hashes/bytes across arms. Seeded document
-permutations are identical; documents have isolated causal windows. EOS is scored
-with zero bytes. Screening is the first 8 validation documents; confirmation the
-next 8, disjoint from training and each other. No sealed-test path exists.
+Use the exact owner-approved commit, a CUDA-compatible nominal32GB GPU, at least16GB host RAM (32GB recommended) and preferably30GB free disk for source/data, temporary archives and checkpoints. Prepare data before reserving a six-hour GPU allocation. GPU model is currently unknown. If the pinned CUDA/PyTorch build cannot run it, stop for owner review; never change precision/batch/representations yourself.
 
-Shared evaluation scores each target once with overlapping context and FP64 NLL
-accumulation. BPB denominator is actual target UTF-8 bytes. Frequency strata are
-three token-type groups ranked by training-only occurrence count, ties by ID;
-strata boundaries differ by tokenizer and are explanatory, not matched token sets.
-
-## Feasibility scope and commands
-
-Data-only walk to 2,000,000 baseline bytes ended at 2,006,956 bytes, 277 groups,
-50,892,756,872,976 FLOPs. This integer is frozen in toy YAML for both arms. Future
-extended training must use a new output directory/configuration and authorization.
-
-Run from repository root with the installed Python environment (on Windows use
-`.venv/Scripts/python.exe`; on Linux use the environment's `python`):
-
-```sh
-python -B -m pytest -q --basetemp=.tmp/scaling-tests
-python scripts/vocab_scaling.py validate --config configs/vocab_scaling_toy.yaml
-python scripts/vocab_scaling.py preflight --config configs/vocab_scaling_toy.yaml
-python scripts/vocab_scaling.py profile --arm baseline8k
-python scripts/vocab_scaling.py profile --arm vocab16k
-python scripts/vocab_scaling.py train --arm baseline8k
-python scripts/vocab_scaling.py train --arm vocab16k
-python scripts/vocab_scaling.py train --arm vocab16k --resume
-python scripts/vocab_scaling.py evaluate --arm vocab16k
-python scripts/vocab_scaling.py diagnose --arm vocab16k
-python scripts/vocab_scaling.py report
+```bash
+python3.10 -m venv .venv
+source .venv/bin/activate
+python -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+python -m pip install -e ".[dev]"
+python scripts/vocab_scaling.py prepare --config configs/vocab_scaling_large.yaml
+python scripts/vocab_scaling.py preflight --config configs/vocab_scaling_large.yaml
 ```
 
-`--max-attempts N` simulates a job boundary, retaining the original global budget.
-SIGINT/SIGTERM request a stop after the current complete update; last.pt is saved
-atomically with existing bounded Windows replacement retry. Periodic checkpoints
-occur every 25 attempts or 300 seconds at completed boundaries. A hard kill during
-an update loses work since the last checkpoint; resume recomputes that work from
-the checkpoint trajectory. Source/environment/config/tokenizer changes fail closed.
-Single writer per arm/output directory is required.
+On Windows use `.venv/Scripts/Activate.ps1`. Project dependencies pin the tested NumPy1.24.4, tokenizers0.22.1, PyYAML6.0.2, pyarrow18.1.0, matplotlib3.7.5 and pytest8.3.5. The system Python on the preparation machine has an older incompatible torch; use the project environment.
 
-Validation and diagnostic fractions are frozen in configuration. Crossing a fraction
-runs at the first complete update at/after that point; report actual FLOPs, never
-interpolate. Resume uses saved cumulative FLOPs to preserve threshold progression.
-The exact budget endpoint usually falls between groups: final evaluation is marked
-separately and unused FLOPs are reported. Best screening is saved independently;
-confirmation currently evaluates the final checkpoint, not the selected best.
+A fresh clone needs no external prepared corpus. `prepare` obtains pinned source files, reuses valid cache files, and generates identical local16K/32K train/validation shards under `data/vocab_scaling_large_final/`. Matching complete generations are verified without download/re-encoding. Corrupt/mismatched existing files fail without replacement. Completed stages are reusable; an interrupted incomplete shard stage requires owner recovery, preserving evidence.
 
-## Outputs and future large study
+On the actual server, `preflight` automatically runs short all-arm configured optimizer-update profiles, checkpoint I/O, process-boundary resume and tiny real-data integration checks when receipts are absent/stale. It records exact CUDA/PyTorch/GPU/environment identity and enforces device capacity >=30GiB and **allocated/reserved peaks <=24GiB**, including checkpoint load. Local6GB profiles cannot satisfy this server gate. Every mandatory scientific/resource failure remains FAIL and exits1. A passing server preflight creates the immutable local execution protocol.
 
-Ignored `results/vocab_scaling_toy/` holds preflight, per-arm manifests, profiles,
-training/validation/diagnostic JSONL, checkpoints, result.json, summary.csv,
-report.md and curves.png. Logs record observed timestamps/exposure/compute and
-storage. Sparse deterministic sampled spectra are bounded to 128 effective rows;
-projection conditioning and factor norms supplement low-rank rank utilization.
-Callbacks in `DIAGNOSTIC_EXTENSIONS` allow future representation diagnostics.
-Hash includes occupancy/collisions/sharing/importance; optional bounded actual
-LM-loss gradient interference takes a supplied probe batch and includes both tied
-paths. Adaptive records per-band factor ranks/norms/conditioning/allocation.
-Hash/Adaptive are not enabled as primary config arms and have not been profiled
-in this task. Diagnostics run outside complete-update timings.
+After that preflight passes, run the assigned arm; repeat the identical command after every allocation:
 
-The large YAML is a template: 10 layers, d=512, f=2048, context=512 gives a
-31,771,648-parameter backbone. It intentionally has null tokenizer locations and
-a nonexistent corpus root; preflight refuses it. After separate authorization,
-prepare compatible 16K/32K artifacts (64K optional), configure those paths, freeze
-a production FLOP budget/output directory and screening/confirmation manifests,
-then use the same CLI with `--arm baseline16k` and `--arm vocab32k`. Tokenizer-family
-loading currently expects the shared NestedBPE base/expanded artifact contract;
-optional 64K needs its own compatible family directory with common raw documents.
-No new dependencies installed. Plotting requires the already available matplotlib.
+```bash
+python scripts/vocab_scaling.py train --config configs/vocab_scaling_large.yaml --arm baseline16k --resume
+python scripts/vocab_scaling.py train --config configs/vocab_scaling_large.yaml --arm dense32k --resume
+python scripts/vocab_scaling.py train --config configs/vocab_scaling_large.yaml --arm lowrank32k --resume
+python scripts/vocab_scaling.py train --config configs/vocab_scaling_large.yaml --arm adaptive32k --resume
+```
 
-## Limitations to address before production
+One command starts a fresh arm or resumes its last durable checkpoint. No scientific configuration is selected by the operator. Atomic checkpoints every300seconds; stop at5h50m from runner startup, with600seconds before expected termination. SIGTERM/SIGINT stop at a complete update. Model, optimizer, scheduler, RNG, cursor, FLOPs/bytes/tokens/update counters and derived schedules restore; global budget never resets. Repeat until `result.json` reports `completion: budget_boundary`.
 
-Same-environment CPU and this CUDA setup pass bitwise continuation tests; CUDA
-across hardware/software or nondeterministic kernels has no bitwise guarantee.
-Time/peak allocator measurements naturally vary. Profiling uses real document
-windows, so tokenizer-dependent shapes differ and must be interpreted as actual
-batch characteristics. Host RAM and isolated reconstruction temporary bytes are
-not instrumented. JSONL and checkpoint publication are separate: a hard kill can
-leave log rows newer than the last checkpoint; recovery must trim these before
-resuming (the runner performs this reconciliation). No concurrent writers.
+```bash
+python scripts/vocab_scaling.py status --config configs/vocab_scaling_large.yaml --arm baseline16k
+python scripts/vocab_scaling.py evaluate --config configs/vocab_scaling_large.yaml --arm baseline16k
+python scripts/vocab_scaling.py confirm --config configs/vocab_scaling_large.yaml --arm baseline16k
+python scripts/vocab_scaling.py report --config configs/vocab_scaling_large.yaml
+python -m pytest -q
+```
+
+Repeat status/evaluate/confirm for other arms; confirm once after all four finish. Outputs: `results/vocab_scaling_large/{arm}/run/{manifest.json,last.pt,best.pt,training.jsonl,validation.jsonl,diagnostics.jsonl,result.json}`, plus root reports/plots/CSV and preflight receipts. All remain ignored. On termination preserve files and repeat the same train command. Stop/contact owner on missing/incompatible checkpoint, hash/source/environment change, failed preflight, OOM, nonfinite loss, stream exhaustion or absent scheduled outputs. Never delete counters or reset budget.
+
+## Final local verification
+
+Retained suite: **103 tests passed**; an exact candidate-tree export is also tested independently of ignored research files. Mathematical Dense/Low-rank/Adaptive tying, shared checkpoint formats, storage/maximality/allocation, FLOPs/refusal, tokenizer/data coverage/disjointness, protocol/source enforcement, resume, timed stop and reporting remain covered. Historical Experiment001 diagnostic tests and old CLI/provenance-format tests were retired together with their dead implementations; shared production math/optimizer/data checks remain. No substantive large training occurred.
+
+All-arm warmed local profiles, exact process-boundary trajectories and two-update real-data integration smokes pass. Smoke quality is not used for configuration selection. Local timing is short RTX2060 evidence; target GPU throughput cannot be inferred from32GB VRAM. Exact final data walks and job projections are in ignored `results/vocab_scaling_large/budget_projections.json`.
+
+| Preflight item | Local status |
+|---|---|
+| backbone_equality | PASS |
+| checkpoint_resume | PASS |
+| configuration | PASS |
+| context_frozen | PASS |
+| dataset_identities | PASS |
+| diagnostic_availability | PASS |
+| expected_parameters | PASS |
+| flop_estimator | PASS |
+| immutable_protocol | PASS |
+| no_sealed_test_access | PASS |
+| no_unresolved_failure | FAIL |
+| precision | PASS |
+| real_data_smoke | PASS |
+| representation_selection | PASS |
+| runtime_profile_availability | PASS |
+| server_profile | FAIL |
+| six_hour_readiness | PASS |
+| source_identity | PASS |
+| storage_ceiling | PASS |
+| storage_utilization | PASS |
+| tokenizer_identities | PASS |
+| train_validation_disjointness | PASS |
+| training_budget_frozen | PASS |
+| unique_data_availability | PASS |
+| validation_protocol | PASS |
+
+Only the actual server resource/profile check and its aggregate summary may remain FAIL locally. The input protocol/config/source/project/tokenizer/data identities are frozen. Final commit SHA is assigned when this reviewed candidate is committed; source-content identity is independently enforced.
+
+## Git handoff classification
+
+**A: required Git tree** (includes unchanged tracked modules and new small frozen artifacts):
+
+```text
+.gitattributes
+.gitignore
+artifacts/vocab_scaling_large/protocol.json
+artifacts/vocab_scaling_large/tokenizers/base.json
+artifacts/vocab_scaling_large/tokenizers/expanded.json
+artifacts/vocab_scaling_large/tokenizers/nested.json
+artifacts/vocab_scaling_large/tokenizers/protocol.json
+configs/testing.yaml
+configs/vocab_scaling_large.yaml
+docs/VOCAB_SCALING.md
+pyproject.toml
+README.md
+scripts/__init__.py
+scripts/vocab_scaling.py
+tests/conftest.py
+tests/fineweb/test_fineweb.py
+tests/training/test_compressed.py
+tests/training/test_standalone.py
+tests/training/test_training.py
+tests/training/test_vocab_scaling.py
+vocab_lm/__init__.py
+vocab_lm/accounting.py
+vocab_lm/checkpoint.py
+vocab_lm/config.py
+vocab_lm/data.py
+vocab_lm/evaluate.py
+vocab_lm/fineweb.py
+vocab_lm/model.py
+vocab_lm/runtime.py
+vocab_lm/tokenizer.py
+vocab_lm/train.py
+```
+
+**B: local-only, ignored:** `.local_history/`, `data/`, `results/`, `checkpoints/`, `.tmp/`, `.venv/` and Python caches. Historical modified research reports/configs/scripts were copied into `.local_history/pre_final_large/` before removal from the active tree. Previous large preparation receipts/checkpoints remain in `results/vocab_scaling_large_previous/`. The previous complete source snapshot reproduces its archived input-protocol source hash. No local historical evidence was deleted or Git history rewritten.
+
+**C: formerly tracked paths removed from the candidate Git tree after consolidation** (these are explicit tracked deletions, not merely unstaged files):
+
+```text
+configs/cfg.yaml
+configs/fineweb.yaml
+configs/vocab_scaling_full_toy.yaml
+configs/vocab_scaling_toy.yaml
+docs/FINEWEB_DATA_PROTOCOL.md
+docs/VOCAB_SCALING_FULL_PROTOCOL.md
+docs/VOCAB_SCALING_RESULTS.md
+scripts/experiment_001.py
+scripts/prepare_fineweb.py
+scripts/profile_vocab_memory.py
+scripts/train_dense.py
+scripts/vocab_scaling_full_report.py
+tests/training/test_hash_gate_e.py
+```
+
+`load_data` moved into existing `vocab_lm.data`; callers/tests now import it there. Experiment001-only diagnostics were not promoted into production; independent matrix/gradient/storage/restore tests were retained without that import. Old preparation/verifier code and competing CLIs were retired; large reporting stays in the one runner. README is only a pointer. There are no dedicated historical research files required in the current Git tree. Existing shared model/checkpoint/math modules retain generic representation-format support to avoid unrelated churn and weakened shared correctness coverage.
+
+Commit/staging must contain only the A tree plus C deletions. Corpus downloads/shards, checkpoints, local receipts and generated reports must never be added. Frozen tokenizer/protocol bytes are deliberately small regular Git files; no LFS or external tokenizer download is needed.
+
+**READY TO COMMIT/PUSH — SERVER PREFLIGHT REQUIRED BEFORE TRAINING**

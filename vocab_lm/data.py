@@ -12,7 +12,7 @@ from collections.abc import Sequence
 import struct
 from pathlib import Path
 import numpy as np
-from .runtime import file_hash, read_json, write_json
+from .runtime import file_hash, read_json, write_json, sha256
 from .evaluate import Document
 
 PROTOCOL = "document_eos_disjoint_targets_shuffled_v1"
@@ -27,7 +27,7 @@ class Cursor:
 
 class TrainingData:
     def __init__(self, documents, *, context: int, stride: int, seed: int,
-                 tokenizer: dict, dataset: dict):
+                 tokenizer: dict, dataset: dict, non_repeating=False):
         if not documents or not 1 <= stride <= context:
             raise ValueError("Need documents and 1 <= stride <= context")
         if dataset.get("split") != "train":
@@ -52,6 +52,9 @@ class TrainingData:
                          "protocol": PROTOCOL, "context": context, "stride": stride, "seed": seed}
         self.cursor = Cursor()
         self._epoch = None
+        self.non_repeating = non_repeating
+        if non_repeating:
+            self.identity['non_repeating'] = True
 
     def state_dict(self):
         return {"identity": self.identity, "cursor": asdict(self.cursor)}
@@ -75,6 +78,8 @@ class TrainingData:
             self._epoch = self.cursor.epoch
 
     def next_example(self):
+        if self.non_repeating and self.cursor.epoch:
+            raise RuntimeError('Unique training stream exhausted; wraparound forbidden')
         self._order()
         c = self.cursor
         source = self.order[c.document]
@@ -125,10 +130,10 @@ def token_dtype(vocab_size: int) -> np.dtype:
 
 
 def write_shards(directory: Path, raw_documents, records, pair, *, expanded: bool,
-                 tokenizer: dict, dataset: dict, max_tokens: int) -> dict:
+                 tokenizer: dict, dataset: dict, max_tokens: int, encode_batch_size: int = 1) -> dict:
     if directory.exists():
         raise FileExistsError(directory)
-    if max_tokens < 1 or dataset.get("split") not in {"train", "validation"}:
+    if max_tokens < 1 or encode_batch_size < 1 or dataset.get("split") not in {"train", "validation"}:
         raise ValueError("Invalid shard settings/split")
     directory.mkdir(parents=True)
     model = pair.expanded if expanded else pair.base
@@ -153,10 +158,20 @@ def write_shards(directory: Path, raw_documents, records, pair, *, expanded: boo
                        "tokens": count, "documents": docs})
         stream = None
 
+    def encoded_documents():
+        if encode_batch_size==1:
+            for i,record in enumerate(records):
+                raw=raw_documents[i]
+                yield record,raw,[0]+pair.encode_document(raw,expanded=expanded)
+            return
+        for start in range(0,len(records),encode_batch_size):
+            raws=[raw_documents[i] for i in range(start,min(len(records),start+encode_batch_size))]
+            encoded=model.encode_batch([raw.decode('utf-8') for raw in raws],add_special_tokens=False)
+            for i,(raw,encoding) in enumerate(zip(raws,encoded),start):
+                yield records[i],raw,[0]+encoding.ids+[pair.eos_id]
+
     try:
-        for i, record in enumerate(records):
-            raw = raw_documents[i]
-            ids = [0] + pair.encode_document(raw, expanded=expanded)
+        for record,raw,ids in encoded_documents():
             if (any(t < 0 or t >= vocab_size for t in ids) or 0 in ids[1:-1]
                     or b"".join(token_bytes[t] for t in ids) != raw):
                 raise ValueError("Token range/EOS/byte reconstruction mismatch")
@@ -272,3 +287,40 @@ class DocumentPrefix(Sequence):
         if not 0 <= i < self.count:
             raise IndexError(i)
         return self.documents[i]
+
+
+def load_data(config):
+    """Bind prepared shards to the actual tokenizer, selection and corpus split."""
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from .fineweb import dataset_identity
+    from .tokenizer import NestedBPE, tokenizer_identity
+    root, directory = Path(config.data.root), Path(config.data.tokenizer)
+    pair = NestedBPE.load(directory)
+    expanded = config.vocab_size == pair.expanded.get_vocab_size()
+    tokenizer = tokenizer_identity(directory, expanded)
+    selected = pair.expanded if expanded else pair.base
+    if selected.get_vocab_size() != config.vocab_size:
+        raise ValueError("Configured vocabulary differs from tokenizer")
+    byte_lengths = [len(pair.token_bytes(i, expanded=expanded)) for i in range(config.vocab_size)]
+    identity = dataset_identity(root, "train")
+    validation = dataset_identity(root, "validation")
+    train_docs = ShardedDocuments(root / "shards" / str(config.vocab_size) / "train",
+                                 tokenizer_sha256=tokenizer["sha256"], dataset_sha256=identity["sha256"])
+    valid_docs = ShardedDocuments(root / "shards" / str(config.vocab_size) / "validation",
+                                 tokenizer_sha256=tokenizer["sha256"], dataset_sha256=validation["sha256"])
+    for documents, split in ((train_docs, "train"), (valid_docs, "validation")):
+        if documents.metadata["dataset"].get("split") != split or documents.metadata["byte_lengths"] != byte_lengths:
+            raise ValueError("Shard split or tokenizer byte table mismatch")
+        if documents.metadata["vocab_size"] != config.vocab_size:
+            raise ValueError("Shard vocabulary mismatch")
+    selection = read_json(root / "selection.json")
+    if config.data.tier == "smoke":
+        count = selection["smoke_documents"]
+        train_docs = DocumentPrefix(train_docs, count)
+        identity = dict(identity, sha256=sha256((identity["sha256"] + f":prefix:{count}").encode()),
+                        tier="smoke", documents=count)
+    validation.update(protocol=asdict(config.evaluation), bytes=sum(d["raw_bytes"] for d in selection["validation"]))
+    data = TrainingData(train_docs, context=config.training.context, stride=config.training.stride,
+                        seed=config.training.seed, tokenizer=tokenizer, dataset=identity)
+    return data, valid_docs, validation

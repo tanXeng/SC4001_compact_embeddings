@@ -137,6 +137,7 @@ def train(model, data, config: TrainConfig, *, validation_documents=None,
             break
         if device.type == "cuda":
             torch.cuda.synchronize(device)
+            torch.cuda.reset_peak_memory_stats(device)
         active_start = time.perf_counter()
         optimizer.zero_grad(set_to_none=True)
         lr = optimizer.param_groups[0]["lr"]

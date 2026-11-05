@@ -4,22 +4,17 @@ Only explicit inspection/download stages access the network.
 """
 from __future__ import annotations
 
-from dataclasses import asdict
-import importlib.metadata
 import json
-import math
 from pathlib import Path
-import platform
 import shutil
 import urllib.request
 
 import numpy as np
 import pyarrow.parquet as pq
 
-from .runtime import file_hash, read_json, sha256, source_identity, write_json
-from .data import TrainingData, DocumentPrefix, ShardedDocuments, write_shards
-from .evaluate import windows
-from .tokenizer import NestedBPE, FineWebEvaluationConfig, tokenizer_identity, train_family
+from .runtime import file_hash, read_json, sha256, write_json
+from .data import ShardedDocuments, write_shards
+from .tokenizer import NestedBPE, tokenizer_identity
 
 
 # Generic file/hash/JSON helpers
@@ -66,10 +61,10 @@ def inspect_source(root: Path, config: dict):
                 raise ValueError("Source inaccessible or size mismatch")
         manifest["files"].append(dict(expected, url=url))
     manifest.update(network_estimate_bytes=sum(f["size"] for f in source["files"]),
-                    disk_estimate_bytes=2_000_000_000,
+                    disk_estimate_bytes=config.get('disk_estimate_bytes',2_000_000_000),
                     scope="bounded pinned files; not global random sampling")
-    if manifest["network_estimate_bytes"] > 2_000_000_000:
-        raise PermissionError("Download exceeds 2 GB; separate approval required")
+    if manifest["network_estimate_bytes"] > config.get('download_limit_bytes',2_000_000_000):
+        raise PermissionError("Download exceeds declared preparation limit")
     (root / "source").mkdir(parents=True, exist_ok=True)
     write_json(root / "source" / "dataset_api.json", metadata)
     write_json(root / "source" / "config_files.json", files)
@@ -108,8 +103,8 @@ def check_source(root: Path, config: dict):
 def download_source(root: Path, config: dict):
     manifest = check_source(root, config)
     estimate = sum(f["size"] for f in manifest["files"])
-    if estimate > 2_000_000_000:
-        raise PermissionError("Download exceeds 2 GB; separate approval required")
+    if estimate > config.get('download_limit_bytes',2_000_000_000):
+        raise PermissionError("Download exceeds declared preparation limit")
     if shutil.disk_usage(root).free < manifest["disk_estimate_bytes"]:
         raise OSError("Insufficient space for preparation estimate")
     for f in manifest["files"]:
@@ -249,7 +244,8 @@ def prepare_raw(root: Path, config: dict):
     selected, counts = scan(root, config)
     records = selected["train"] + selected["validation"]
     wanted = {(r["source_path"], r["row"]): r for r in records}
-    with (root / "raw.bin").open("xb") as stream:
+    # An interrupted unpublished raw build may be restarted; final data never overwritten.
+    with (root / "raw.partial").open("wb") as stream:
         for path, row, native_id, raw in source_rows(root, config["source"]):
             d = wanted.get((path, row))
             if d is not None:
@@ -259,6 +255,7 @@ def prepare_raw(root: Path, config: dict):
                 stream.write(raw)
     if any("raw_offset" not in r for r in records):
         raise ValueError("Missing selected source row")
+    (root / "raw.partial").rename(root / "raw.bin")
     selected.update(protocol=config["protocol"], settings=config["selection"], source_rows=counts,
                     source_manifest_sha256=file_hash(root / "source_manifest.json"),
                     raw_sha256=file_hash(root / "raw.bin"))
@@ -274,235 +271,117 @@ def dataset_identity(root, split):
 
 # Tokenizer preparation
 # ------------------------------------------------------------------------
-def prepare_tokenizers(root, config):
-    selection = read_json(root / "selection.json")
-    directory = root / "tokenizers"
-    train_family(RawDocuments(root, selection["train"]), directory, config["tokenizer"])
-    sample = [{k: d[k] for k in ("source_id", "raw_sha256", "raw_bytes", "selection_order")}
-              for d in selection["train"]]
-    write_json(directory / "training_sample.json", sample)
-    write_json(directory / "protocol.json", {
-        "protocol": "fineweb_pilot_train_bpe16k_prefix8k_v1", "config": config["tokenizer"],
-        "sample_sha256": file_hash(directory / "training_sample.json"),
-        "selection_sha256": file_hash(root / "selection.json"),
-        "documents": len(sample), "bytes": sum(d["raw_bytes"] for d in sample),
-        "artifacts": {name: file_hash(directory / name) for name in ("base.json", "expanded.json", "nested.json")},
-        "python": platform.python_version(),
-        "versions": {p: importlib.metadata.version(p) for p in ("tokenizers", "numpy", "pyarrow")},
-        **source_identity(),
-        "replay": "Two independent full-sample fits have identical parsed artifacts; single thread",
-        "future": "32K/64K require a new declared family/sample protocol; retrain maximum vocabulary once and derive prefixes. No claim of fitted-16K extension."})
 
 
 # Token-shard preparation
 # ------------------------------------------------------------------------
-def prepare_shards(root, config):
-    selection = read_json(root / "selection.json")
-    pair = NestedBPE.load(root / "tokenizers")
-    for expanded, size in ((False, 8192), (True, 16384)):
-        for split in ("train", "validation"):
-            write_shards(root / "shards" / str(size) / split,
-                         RawDocuments(root, selection[split]), selection[split], pair,
-                         expanded=expanded, tokenizer=tokenizer_identity(root / "tokenizers", expanded),
-                         dataset=dataset_identity(root, split), **config["shards"])
-    write_json(root / "smoke.json", {"protocol": "pilot_prefix_view_v1",
-               "documents": selection["smoke_documents"], "storage": "view of pilot train shards",
-               "source_ids": [d["source_id"] for d in selection["train"][:selection["smoke_documents"]]]})
 
 
-# Dataset statistics
-# ------------------------------------------------------------------------
-def percentiles(values):
-    return {str(p): float(np.percentile(values, p)) for p in (0, 25, 50, 75, 90, 95, 99, 100)}
+def verify_scaling_data(root, directory, config):
+    """Only train/validation, complete ordered byte/token coverage for a declared family."""
+    root, directory = Path(root), Path(directory)
+    selection = read_json(root/'selection.json')
+    if (selection['settings'] != config['selection'] or
+            selection['source_manifest_sha256'] != file_hash(root/'source_manifest.json') or
+            selection['raw_sha256'] != file_hash(root/'raw.bin')):
+        raise ValueError('Prepared selection/source/raw identity mismatch')
+    check_source(root, config)
+    pair=NestedBPE.load(directory)
+    protocol=read_json(directory/'protocol.json')
+    for name,digest in protocol['artifacts'].items():
+        if file_hash(directory/name)!=digest:
+            raise ValueError('Frozen tokenizer hash mismatch')
+    for key in ('raw_sha256','source_id'):
+        if {d[key] for d in selection['train']} & {d[key] for d in selection['validation']}:
+            raise ValueError('Train/validation overlap')
+    hashes={name:file_hash(root/name) for name in ('selection.json','source_manifest.json','raw.bin')}
+    coverage={}; frequencies={}
+    for expanded,size in ((False,pair.base.get_vocab_size()),(True,pair.expanded.get_vocab_size())):
+        pieces=[pair.token_bytes(i,expanded=expanded) for i in range(size)]
+        coverage[str(size)]={}
+        for split in ('train','validation'):
+            folder=root/'shards'/str(size)/split
+            docs=ShardedDocuments(folder,tokenizer_sha256=tokenizer_identity(directory,expanded)['sha256'],
+                                  dataset_sha256=dataset_identity(root,split)['sha256'])
+            records=selection[split]
+            if len(docs)!=len(records):
+                raise ValueError('Incomplete document coverage')
+            counts=np.zeros(size,dtype=np.int64); total=0
+            for d,r in zip(docs,records):
+                if (d.ids[0]!=0 or d.ids[-1]!=0 or 0 in d.ids[1:-1] or d.raw_sha256!=r['raw_sha256'] or
+                    sha256(b''.join(pieces[i] for i in d.ids))!=r['raw_sha256']):
+                    raise ValueError('Document order/EOS/byte reconstruction mismatch')
+                total+=sum(d.byte_lengths)
+                counts+=np.bincount(d.ids[1:],minlength=size)
+            if total!=sum(r['raw_bytes'] for r in records):
+                raise ValueError('Raw-byte coverage mismatch')
+            coverage[str(size)][split]=dict(documents=len(docs),raw_bytes=total,tokens=int(counts.sum()))
+            if split=='train': frequencies[str(size)]=counts.tolist()
+            hashes[(folder/'index.json').relative_to(root).as_posix()]=file_hash(folder/'index.json')
+            for shard in docs.metadata['shards']:
+                hashes[(folder/shard['file']).relative_to(root).as_posix()]=shard['sha256']
+    return dict(format='fineweb_large_data_v1',hashes=hashes,coverage=coverage,training_counts=frequencies,
+                tokenizer_hashes=protocol['artifacts'],sealed_test_access=False)
 
 
-def statistics(documents, *, context, stride):
-    vocab = documents.metadata["vocab_size"] if isinstance(documents, ShardedDocuments) else documents.documents.metadata["vocab_size"]
-    frequency = np.zeros(vocab, dtype=np.int64)
-    sizes, lengths, empty, windows_count = [], [], 0, 0
-    for d in documents:
-        sizes.append(sum(d.byte_lengths))
-        lengths.append(len(d.ids)-2)
-        empty += len(d.ids) == 2
-        # Count one closing EOS as a corpus token; the prefix is context only.
-        frequency += np.bincount(d.ids[1:], minlength=vocab)
-        windows_count += math.ceil((len(d.ids)-1)/stride)
-    raw_bytes, tokens = sum(sizes), int(frequency.sum())
-    return {"raw_bytes": raw_bytes, "documents": len(sizes), "text_tokens": sum(lengths),
-            "tokens_including_closing_eos": tokens, "eos_count": int(frequency[0]),
-            "empty_documents": empty, "tokens_per_byte": tokens/raw_bytes, "bytes_per_token": raw_bytes/tokens,
-            "raw_document_byte_percentiles": percentiles(sizes), "text_token_length_percentiles": percentiles(lengths),
-            "vocabulary_used": int((frequency > 0).sum()), "vocabulary_utilization": float((frequency > 0).mean()),
-            "token_frequencies": frequency.tolist(),
-            "rare_token_types": {str(n): int(((frequency > 0) & (frequency <= n)).sum()) for n in (1, 5, 10, 100)},
-            "unused_token_types": int((frequency == 0).sum()),
-            "long_documents": {"over_context": sum(n > context for n in lengths),
-                               "over_4096_tokens": sum(n > 4096 for n in lengths),
-                               "over_65536_bytes": sum(n > 65536 for n in sizes),
-                               "maximum_bytes": max(sizes), "maximum_text_tokens": max(lengths)},
-            "estimated_training_windows": windows_count, "context": context, "stride": stride}
-
-
-# Dataset verification and provenance
-# ------------------------------------------------------------------------
-class CodeProvenanceMismatch(ValueError):
-    """Artifact integrity passed, but its recorded producing code differs."""
-
-
-def implementation_fingerprints():
-    project = Path(__file__).resolve().parents[1]
-    paths = ["vocab_lm/" + name + ".py" for name in
-             ("runtime", "tokenizer", "data", "evaluate", "fineweb")]
-    paths += ["scripts/prepare_fineweb.py", "configs/fineweb.yaml"]
-    return {p: file_hash(project / p) for p in paths}
-
-
-def verify(root, config, *, publish=False, allow_code_provenance_mismatch=False):
-    """Read-only replay by default; publishing is for a new generation only."""
-    if publish and (root / "artifact_hashes.json").exists():
-        raise FileExistsError("Never replace an existing artifact seal")
-    if (root / "artifact_hashes.json").exists():
-        sealed = read_json(root / "artifact_hashes.json")
-        inventory = {p.relative_to(root).as_posix() for p in root.rglob("*")
-                     if p.is_file() and p.name != "artifact_hashes.json"}
-        if inventory != set(sealed):
-            raise ValueError("Prepared artifact inventory differs from seal")
-        for relative, record in sealed.items():
-            path = root / relative
-            if path.stat().st_size != record["bytes"] or file_hash(path) != record["sha256"]:
-                raise ValueError(f"Prepared artifact hash differs: {relative}")
-    fingerprints = implementation_fingerprints()
-    previous = read_json(root / "verification.json") if (root / "verification.json").exists() else None
-    recorded = previous.get("implementation_sha256") if previous else None
-    provenance = {"status": "unrecorded" if recorded is None else
-                  "match" if recorded == fingerprints else "mismatch",
-                  "recorded": recorded, "current": fingerprints}
-    if provenance["status"] != "match" and not (publish or allow_code_provenance_mismatch):
-        raise CodeProvenanceMismatch(
-            "Code provenance differs or is unrecorded; existing artifact seal checks passed. "
-            "Review provenance, then explicitly allow read-only compatibility replay.")
-    source = check_source(root, config)
-    selection = read_json(root / "selection.json")
-    if (selection["source_manifest_sha256"] != file_hash(root / "source_manifest.json")
-            or selection["settings"] != config["selection"]
-            or selection["raw_sha256"] != file_hash(root / "raw.bin")):
-        raise ValueError("Selection/source/raw identity changed")
-    replay, counts = scan(root, config)
-    for split in ("train", "validation"):
-        saved = [{k: v for k, v in d.items() if k != "raw_offset"} for d in selection[split]]
-        if replay[split] != saved:
-            raise ValueError("Deterministic selection replay differs")
-    if counts != selection["source_rows"] or replay["smoke_documents"] != selection["smoke_documents"]:
-        raise ValueError("Source/smoke prefix changed")
-    raw_total = sum(d["raw_bytes"] for s in ("train", "validation") for d in selection[s])
-    intervals = sorted((d["raw_offset"], d["raw_bytes"]) for s in ("train", "validation") for d in selection[s])
-    offset = 0
-    for start, size in intervals:
-        if start != offset:
-            raise ValueError("Raw offsets overlap or leave gaps")
-        offset += size
-    if offset != raw_total or (root / "raw.bin").stat().st_size != raw_total:
-        raise ValueError("Raw byte totals differ")
-    train_ids = {d["source_id"] for d in selection["train"]}
-    valid_ids = {d["source_id"] for d in selection["validation"]}
-    if train_ids & valid_ids:
-        raise ValueError("Train/validation overlap")
-    protocol = read_json(root / "tokenizers" / "protocol.json")
-    for name, digest in protocol["artifacts"].items():
-        if file_hash(root / "tokenizers" / name) != digest:
-            raise ValueError("Tokenizer artifact mismatch")
-    if file_hash(root / "tokenizers" / "training_sample.json") != protocol["sample_sha256"]:
-        raise ValueError("Tokenizer sample hash differs")
-    sample = read_json(root / "tokenizers" / "training_sample.json")
-    if sample != [{k: d[k] for k in ("source_id", "raw_sha256", "raw_bytes", "selection_order")}
-                  for d in selection["train"]]:
-        raise ValueError("Tokenizer sample is not exactly pilot train")
-    pair = NestedBPE.load(root / "tokenizers")
-    pair.verify()
-    evaluation = FineWebEvaluationConfig(**config["validation"])
-    stats, coverage = {}, {}
-    for expanded, size in ((False, 8192), (True, 16384)):
-        table = [pair.token_bytes(i, expanded=expanded) for i in range(size)]
-        stats[str(size)], coverage[str(size)] = {}, {}
-        for split in ("train", "validation"):
-            identity = tokenizer_identity(root / "tokenizers", expanded)
-            documents = ShardedDocuments(root / "shards" / str(size) / split,
-                         tokenizer_sha256=identity["sha256"], dataset_sha256=dataset_identity(root, split)["sha256"])
-            if documents.metadata["byte_lengths"] != list(map(len, table)):
-                raise ValueError("Shard token-byte table differs from tokenizer")
-            if len(documents) != len(selection[split]):
-                raise ValueError("Cross-tokenizer document count mismatch")
-            raws = RawDocuments(root, selection[split])
-            targets, byte_count = 0, 0
-            for i, d in enumerate(documents):
-                record = documents.records[i]
-                if any(record[k] != selection[split][i][k] for k in ("source_id", "raw_sha256", "raw_bytes", "selection_order")):
-                    raise ValueError("Cross-tokenizer document identity mismatch")
-                raw = raws[i]
-                if b"".join(table[t] for t in d.ids) != raw:
-                    raise ValueError("Exact byte reconstruction differs")
-                # Independently verify encoding and serialized sequence.
-                if tuple([0] + pair.encode_document(raw, expanded=expanded)) != d.ids:
-                    raise ValueError("Token sequence differs from tokenizer")
-                if split == "validation":
-                    next_target, doc_bytes = 1, 0
-                    for w in windows(d, evaluation):
-                        if w.first_target != next_target:
-                            raise ValueError("Missing/repeated validation target")
-                        next_target += len(w.targets)-w.score_from
-                        doc_bytes += sum(w.byte_lengths[w.score_from:])
-                    if next_target != len(d.ids) or doc_bytes != len(raw):
-                        raise ValueError("Validation coverage differs")
-                    targets += next_target-1
-                    byte_count += doc_bytes
-            stats[str(size)][split] = statistics(documents, **{k: config["loader"][k] for k in ("context", "stride")})
-            if split == "train":
-                smoke = DocumentPrefix(documents, selection["smoke_documents"])
-                stats[str(size)]["smoke"] = statistics(smoke, **{k: config["loader"][k] for k in ("context", "stride")})
-                data = TrainingData(documents, **config["loader"], tokenizer=identity, dataset=dataset_identity(root, split))
-                for _ in range(17):
-                    data.next_example()
-                state = data.state_dict()
-                expected = [data.next_example() for _ in range(37)]
-                restored = TrainingData(documents, **config["loader"], tokenizer=identity, dataset=dataset_identity(root, split))
-                restored.load_state_dict(state)
-                if expected != [restored.next_example() for _ in range(37)]:
-                    raise ValueError("Interrupted loader continuation differs")
-            coverage[str(size)][split] = {"documents": len(documents), "raw_bytes": stats[str(size)][split]["raw_bytes"],
-                       "validation_targets": targets if split == "validation" else None,
-                       "validation_scored_bytes": byte_count if split == "validation" else None}
-    stats["savings"] = {split: {"token_reduction_fraction": 1-stats["16384"][split]["tokens_including_closing_eos"]/stats["8192"][split]["tokens_including_closing_eos"],
-                      "token_count_ratio_8k_over_16k": stats["8192"][split]["tokens_including_closing_eos"]/stats["16384"][split]["tokens_including_closing_eos"]}
-                      for split in ("smoke", "train", "validation")}
-    receipt = {"source": source, "coverage": coverage, "evaluation": asdict(evaluation),
-               "checks": "source hashes, replay, disjointness, prefixes, raw hashes, nested artifacts, all token roundtrips, all validation targets, mmap, exact cursor continuation",
-               "model_training_updates": 0, "model_evaluation": "none; coverage only, synthetic evaluator test separately",
-               "implementation_sha256": fingerprints, "code_provenance": provenance,
-               "statistics": stats}
-    if publish:
-        write_json(root / "statistics.json", stats)
-        write_json(root / "verification.json", receipt)
-        write_json(root / "artifact_hashes.json", {p.relative_to(root).as_posix():
-            {"sha256": file_hash(p), "bytes": p.stat().st_size} for p in sorted(root.rglob("*"))
-            if p.is_file() and p.name != "artifact_hashes.json"})
-    return receipt
-
-
-# Training-data construction
-# ------------------------------------------------------------------------
-def load_training_data(root: Path, config: dict, *, vocab_size: int, tier: str):
-    """Construct loader/cursor only; never construct a model or optimizer."""
-    if vocab_size not in {8192, 16384} or tier not in {"smoke", "pilot"}:
-        raise ValueError("Only Gate 4A vocabularies and prepared tiers are available")
-    identity = tokenizer_identity(root / "tokenizers", vocab_size == 16384)
-    dataset = dataset_identity(root, "train")
-    documents = ShardedDocuments(root / "shards" / str(vocab_size) / "train",
-                tokenizer_sha256=identity["sha256"], dataset_sha256=dataset["sha256"])
-    if tier == "smoke":
-        count = read_json(root / "selection.json")["smoke_documents"]
-        documents = DocumentPrefix(documents, count)
-        dataset = dict(dataset, sha256=sha256((dataset["sha256"] + f":prefix:{count}").encode()),
-                       tier=tier, documents=count)
-    return TrainingData(documents, **config["loader"], tokenizer=identity, dataset=dataset)
-
-
+def prepare_scaling_data(root, directory, config):
+    """Idempotent staged reuse of the existing acquisition/selection/shard pipeline."""
+    root, directory = Path(root), Path(directory)
+    if set(config['source']) != {'dataset','configuration','revision','files'} or config['source']['dataset']!='HuggingFaceFW/fineweb':
+        raise ValueError('Only the declared standard FineWeb training source is supported')
+    root.mkdir(parents=True,exist_ok=True)
+    seal=root/'preparation.json'
+    if seal.exists():
+        old=read_json(seal)
+        if old.get('preparation_config')!=config:
+            raise ValueError('Prepared configuration mismatch; never replace an existing generation')
+        result=verify_scaling_data(root,directory,config)
+        if any(result[k]!=old[k] for k in result):
+            raise ValueError('Prepared artifact seal mismatch')
+        return old
+    if not (root/'source_manifest.json').exists():
+        # Reuse cached, pinned source metadata on this workstation; fresh clones inspect remotely.
+        cached=Path('data/fineweb_v1')
+        if (cached/'source/dataset_api.json').exists():
+            (root/'source').mkdir(exist_ok=True)
+            for name in ('dataset_api.json','config_files.json'):
+                shutil.copyfile(cached/'source'/name,root/'source'/name)
+            source=config['source']
+            write_json(root/'source_manifest.json',dict(source,files=[dict(f,url=HUB+source['dataset']+'/resolve/'+source['revision']+'/'+f['path']) for f in source['files']],
+                disk_estimate_bytes=config['disk_estimate_bytes']))
+        else:
+            inspect_source(root,config)
+    check_source(root,config)
+    canonical=dict(config['source'],files=[dict(f,url=HUB+config['source']['dataset']+'/resolve/'+config['source']['revision']+'/'+f['path']) for f in config['source']['files']],
+                   disk_estimate_bytes=config['disk_estimate_bytes'])
+    if read_json(root/'source_manifest.json')!=canonical:
+        if (root/'selection.json').exists():
+            raise ValueError('Frozen source manifest differs from canonical preparation')
+        write_json(root/'source_manifest.json',canonical)
+    for f in config['source']['files']:
+        target=root/'source'/Path(f['path']).name
+        cached=Path('data/vocab_scaling_large/source')/target.name
+        if not cached.exists(): cached=Path('data/fineweb_v1/source')/target.name
+        if not target.exists() and cached.exists() and file_hash(cached)==f['sha256']:
+            # Hard link is local reuse only; it does not change either generation.
+            import os
+            os.link(cached,target)
+    download_source(root,config)
+    if not (root/'selection.json').exists():
+        prepare_raw(root,config)
+    selection=read_json(root/'selection.json')
+    pair=NestedBPE.load(directory)
+    for expanded,size in ((False,pair.base.get_vocab_size()),(True,pair.expanded.get_vocab_size())):
+        for split in ('train','validation'):
+            target=root/'shards'/str(size)/split
+            if target.exists():
+                # Existing complete stages are verified below; incomplete stages fail explicitly.
+                if not (target/'index.json').exists():
+                    raise ValueError(f'Incomplete shard stage {target}; preserve evidence and contact owner')
+                continue
+            write_shards(target,RawDocuments(root,selection[split]),selection[split],pair,
+                expanded=expanded,tokenizer=tokenizer_identity(directory,expanded),dataset=dataset_identity(root,split),**config['shards'])
+    result=verify_scaling_data(root,directory,config)
+    result['preparation_config']=config
+    write_json(seal,result)
+    return result

@@ -7,10 +7,10 @@ name = "vocab-lm-research"
 version = "0.1.0"
 description = "Small tied-embedding language models under explicit research budgets"
 requires-python = ">=3.10"
-dependencies = ["torch>=2.3", "numpy", "tokenizers>=0.22", "PyYAML", "pyarrow"]
+dependencies = ["torch==2.5.1", "numpy==1.24.4", "tokenizers==0.22.1", "PyYAML==6.0.2", "pyarrow==18.1.0", "matplotlib==3.7.5"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest==8.3.5"]
 
 [tool.setuptools.packages.find]
 where = ["."]
