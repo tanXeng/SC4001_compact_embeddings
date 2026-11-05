@@ -269,6 +269,16 @@ def dataset_identity(root, split):
             "source_sha256": file_hash(root / "source_manifest.json"), "split": split}
 
 
+def selection_provenance(selection, train_documents):
+    """Ordered selection identity independent of physical raw-file offsets."""
+    def digest(records):
+        rows=[{k:v for k,v in r.items() if k!='raw_offset'} for r in records]
+        return sha256(json.dumps(rows,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode())
+    return dict(train_documents=train_documents,
+                train_sha256=digest(selection['train'][:train_documents]),
+                validation_sha256=digest(selection['validation']))
+
+
 # Tokenizer preparation
 # ------------------------------------------------------------------------
 
@@ -281,6 +291,9 @@ def verify_scaling_data(root, directory, config):
     """Only train/validation, complete ordered byte/token coverage for a declared family."""
     root, directory = Path(root), Path(directory)
     selection = read_json(root/'selection.json')
+    preserved=config.get('preserve_selection')
+    if preserved and selection_provenance(selection,preserved['train_documents'])!=preserved:
+        raise ValueError('Extension changed existing training prefix or validation')
     if (selection['settings'] != config['selection'] or
             selection['source_manifest_sha256'] != file_hash(root/'source_manifest.json') or
             selection['raw_sha256'] != file_hash(root/'raw.bin')):
@@ -330,6 +343,28 @@ def prepare_scaling_data(root, directory, config):
     if set(config['source']) != {'dataset','configuration','revision','files'} or config['source']['dataset']!='HuggingFaceFW/fineweb':
         raise ValueError('Only the declared standard FineWeb training source is supported')
     root.mkdir(parents=True,exist_ok=True)
+    previous=Path(config['extension_from']) if config.get('extension_from') else None
+    if previous is not None and not previous.exists():
+        if not config.get('preserve_selection'):
+            raise ValueError('Missing parent generation and frozen prefix provenance')
+        previous=None # Fresh clone reproduces pinned selection, then checks the digests.
+    if previous is not None:
+        if previous.resolve()==root.resolve():
+            raise ValueError('Extension requires a separate generation; never overwrite')
+        old=read_json(previous/'preparation.json')
+        before=old['preparation_config']
+        if (before['source']['dataset']!=config['source']['dataset'] or
+            before['source']['revision']!=config['source']['revision'] or
+            before['source']['files']!=config['source']['files'][:len(before['source']['files'])] or
+            any(before['selection'][k]!=config['selection'][k] for k in ('seed','validation_modulus','validation_bytes'))):
+            raise ValueError('Extension must preserve source prefix, split and validation selection')
+        for name,digest in old['tokenizer_hashes'].items():
+            if file_hash(directory/name)!=digest:
+                raise ValueError('Extension tokenizer changed')
+        if not (root/'source_manifest.json').exists():
+            (root/'source').mkdir(exist_ok=True)
+            for name in ('dataset_api.json','config_files.json'):
+                shutil.copyfile(previous/'source'/name,root/'source'/name)
     seal=root/'preparation.json'
     if seal.exists():
         old=read_json(seal)
@@ -341,7 +376,7 @@ def prepare_scaling_data(root, directory, config):
         return old
     if not (root/'source_manifest.json').exists():
         # Reuse cached, pinned source metadata on this workstation; fresh clones inspect remotely.
-        cached=Path('data/fineweb_v1')
+        cached=previous if previous is not None else Path('data/fineweb_v1')
         if (cached/'source/dataset_api.json').exists():
             (root/'source').mkdir(exist_ok=True)
             for name in ('dataset_api.json','config_files.json'):
@@ -360,7 +395,7 @@ def prepare_scaling_data(root, directory, config):
         write_json(root/'source_manifest.json',canonical)
     for f in config['source']['files']:
         target=root/'source'/Path(f['path']).name
-        cached=Path('data/vocab_scaling_large/source')/target.name
+        cached=(previous/'source'/target.name) if previous is not None else Path('data/vocab_scaling_large/source')/target.name
         if not cached.exists(): cached=Path('data/fineweb_v1/source')/target.name
         if not target.exists() and cached.exists() and file_hash(cached)==f['sha256']:
             # Hard link is local reuse only; it does not change either generation.
@@ -370,6 +405,16 @@ def prepare_scaling_data(root, directory, config):
     if not (root/'selection.json').exists():
         prepare_raw(root,config)
     selection=read_json(root/'selection.json')
+    if config.get('preserve_selection') and selection_provenance(selection,config['preserve_selection']['train_documents'])!=config['preserve_selection']:
+        raise ValueError('Extension changed existing training prefix or validation')
+    if previous is not None:
+        prior=read_json(previous/'selection.json')
+        # Physical raw offsets change when materializing a larger selection.
+        identity=lambda r:{k:v for k,v in r.items() if k!='raw_offset'}
+        if ([identity(r) for r in prior['train']]!=
+            [identity(r) for r in selection['train'][:len(prior['train'])]] or
+            [identity(r) for r in prior['validation']]!=[identity(r) for r in selection['validation']]):
+            raise ValueError('Extension changed existing training prefix or validation')
     pair=NestedBPE.load(directory)
     for expanded,size in ((False,pair.base.get_vocab_size()),(True,pair.expanded.get_vocab_size())):
         for split in ('train','validation'):

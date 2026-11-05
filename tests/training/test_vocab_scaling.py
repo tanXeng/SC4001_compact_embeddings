@@ -52,7 +52,7 @@ def test_large_preparation_config_is_fail_closed(tmp_path):
     from scripts.vocab_scaling import require_large_receipt
     s=load_settings('configs/vocab_scaling_large.yaml')
     assert set(s['arms'])=={'baseline16k','dense32k','lowrank32k','adaptive32k'}
-    assert s['training']['budget_limit']==250000000000000000
+    assert s['training']['budget_limit']==500000000000000000
     s['protocol']['phase']='preparation_only'
     assert ModelConfig(**s['model']).backbone_parameters==32033792
     with pytest.raises(ValueError,match='preparation_only'):
@@ -61,7 +61,8 @@ def test_large_preparation_config_is_fail_closed(tmp_path):
     with pytest.raises(ValueError,match='server preflight'):
         require_large_receipt(s)
     assert s['training']['context']==s['evaluation']['context']==1024
-    assert s['training']['microbatch_size']*s['training']['accumulation']==8
+    assert (s['training']['microbatch_size'],s['training']['accumulation'])==(16,2)
+    assert s['training']['microbatch_size']*s['training']['accumulation']*s['training']['context']==32768
 
 
 def test_large_preflight_missing_inputs_are_failures(tmp_path,monkeypatch):
@@ -252,6 +253,25 @@ def test_frozen_input_protocol_rejects_config_source_and_overwrite(tmp_path,monk
     with pytest.raises(FileExistsError,match='Never replace'):
         runner.freeze_large_inputs(s)
     assert path.read_bytes()==before
+
+
+@pytest.mark.parametrize('section,key,value',[
+    ('training','microbatch_size',32),('training','learning_rate',.001),
+    ('training','budget_limit',10**18),('model','context',512)])
+def test_batch_profile_rejects_edited_frozen_config(section,key,value):
+    import scripts.vocab_scaling as runner
+    s=load_settings('configs/vocab_scaling_large.yaml')
+    s[section][key]=value
+    with pytest.raises(ValueError,match='unchanged frozen config'):
+        runner.batch_profile_settings(s)
+
+
+@pytest.mark.parametrize('operation',['train','resume','preflight','freeze','synthetic-profile'])
+def test_batch_study_cannot_authorize_other_operations(operation):
+    import scripts.vocab_scaling as runner
+    with pytest.raises(SystemExit) as exc:
+        runner.main([operation,'--batch-study'])
+    assert exc.value.code==2
 
 
 @pytest.mark.parametrize('signal_name',['SIGTERM','SIGINT'])

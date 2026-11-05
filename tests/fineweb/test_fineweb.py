@@ -128,6 +128,21 @@ def test_selection_deterministic_nested_append_and_disjoint():
     assert first != select(chunks, dict(settings, seed=43))
 
 
+def test_extension_provenance_preserves_order_and_ignores_physical_offsets():
+    from vocab_lm.fineweb import selection_provenance
+    original=dict(train=[dict(raw_sha256='a'*64,raw_offset=0),dict(raw_sha256='b'*64,raw_offset=10)],
+                  validation=[dict(raw_sha256='c'*64,raw_offset=20)])
+    expected=selection_provenance(original,2)
+    extended=copy.deepcopy(original)
+    extended['train'].append(dict(raw_sha256='d'*64,raw_offset=90))
+    extended['validation'][0]['raw_offset']=100
+    assert selection_provenance(extended,2)==expected
+    extended['train'].reverse()
+    assert selection_provenance(extended,2)!=expected
+    extended=copy.deepcopy(original);extended['validation'][0]['raw_sha256']='e'*64
+    assert selection_provenance(extended,2)!=expected
+
+
 def test_dedup_empty_and_bounded_source_exhaustion():
     chunk = candidates([b"", b"", b"same", b"same", b"different"])
     rows = list(ordered_candidates([chunk], seed=42, validation_modulus=2))
@@ -191,6 +206,51 @@ def prepared(raw_fixture, pair, tmp_path):
                      dataset={"sha256": "b"*64, "split": "train"}, max_tokens=100)
         paths.append(path)
     return paths
+
+
+def test_concurrent_read_only_shards_have_independent_process_cursors(prepared,tmp_path):
+    import shutil
+    from scripts.vocab_scaling import concurrent_readers
+    size=ShardedDocuments(prepared[0]).metadata['vocab_size']
+    root=tmp_path/'audit'
+    shutil.copytree(prepared[0],root/'shards'/str(size)/'train')
+    s=dict(data=dict(root=str(root)),output=str(tmp_path/'readers'),arms=dict(a=dict(vocab_size=size)))
+    receipt=concurrent_readers(s)
+    assert receipt['passed']
+    workers=Path(s['output'])/'reader_check'/str(size)
+    assert read_json(workers/'0/cursor.json')['cursor']!=read_json(workers/'1/cursor.json')['cursor']
+    assert all(read_json(workers/str(i)/'passed.json')['hashes_unchanged'] for i in range(2))
+
+
+def test_exact_budget_walk_matches_real_batches_and_rejects_extrapolation(prepared,tmp_path,monkeypatch):
+    import shutil
+    import scripts.vocab_scaling as runner
+    from vocab_lm.config import ModelConfig
+    from vocab_lm.model import CausalTransformer
+    docs=ShardedDocuments(prepared[0]);size=docs.metadata['vocab_size']
+    root=tmp_path/'walk'
+    shutil.copytree(prepared[0],root/'shards'/str(size)/'train')
+    write_json(root/'preparation.json',dict(training_counts={str(size):[0]*size}))
+    model=CausalTransformer(ModelConfig(1,8,2,16,8,0.),size)
+    monkeypatch.setattr(runner,'construct',lambda *args:(model,None))
+    data=TrainingData(docs,context=8,stride=4,seed=42,
+                      tokenizer=docs.metadata['tokenizer'],dataset=docs.metadata['dataset'])
+    batches=[[data.batch(2) for _ in range(2)] for _ in range(3)]
+    costs=[sum(runner.scaling_training_flops(model,*b['inputs'].shape) for b in group) for group in batches]
+    budget=sum(costs[:2])-1
+    s=dict(data=dict(root=str(root)),training=dict(context=8,stride=4,seed=42,microbatch_size=2,accumulation=2,budget_limit=budget),
+           arms=dict(a=dict(vocab_size=size)),output=str(tmp_path/'reports'),
+           protocol=dict(data_supported_budget=budget,candidate_budgets=[budget,10**30],data_margin=1.2))
+    rows=runner.budget_projections(s,{})
+    row=next(r for r in rows if r['budget']==budget)
+    assert row['supported'] and row['updates']==1 and row['raw_bytes_exact']
+    assert row['estimated_flops']==costs[0]
+    assert row['raw_bytes']==sum(b['bytes'] for b in batches[0])
+    assert row['input_positions']==sum(b['inputs'].numel() for b in batches[0])
+    exhausted=next(r for r in rows if r['budget']==10**30)
+    assert not exhausted['supported'] and not exhausted['extrapolated']
+    assert isinstance(exhausted['raw_bytes'],int)
+    assert exhausted['raw_bytes']<=sum(docs.metadata['byte_lengths'][t] for d in docs for t in d.ids)
 
 
 def test_shards_mmap_serialization_boundaries_bytes_and_identities(prepared, pair, raw_fixture):

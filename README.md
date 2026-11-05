@@ -7,5 +7,6 @@ python scripts/vocab_scaling.py prepare --config configs/vocab_scaling_large.yam
 python scripts/vocab_scaling.py preflight --config configs/vocab_scaling_large.yaml
 ```
 
-Train/resume the assigned arm only after the actual 32 GB server preflight passes.
+Train/resume only after the final A40 preflight passes: 5e17 FLOPs per arm,
+microbatch16 x accumulation2, one independent arm per GPU, no DDP.
 Downloaded data, checkpoints, logs and local historical records are excluded from Git.

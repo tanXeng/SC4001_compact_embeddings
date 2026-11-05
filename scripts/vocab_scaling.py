@@ -553,11 +553,57 @@ def freeze_large_inputs(s):
         tokenizer_hashes={n:file_hash(directory/n) for n in ('base.json','expanded.json','nested.json','protocol.json')},
         tokenizer_provenance=tokenizer,preparation_sha256=file_hash(Path(s['data']['root'])/'preparation.json'),
         dataset_hashes=seal['hashes'],coverage=seal['coverage'],allocations=allocations,
-        data_walks=[{k:r[k] for k in ('arm','budget','updates','estimated_flops','scored_tokens','input_positions','raw_bytes','supported','supported_with_margin')} for r in walks],
+        stream_hashes={str(size):{split:sha256(json.dumps({name:digest for name,digest in seal['hashes'].items()
+            if name.startswith(f'shards/{size}/{split}/')},sort_keys=True).encode())
+            for split in ('train','validation')} for size in sorted({a['vocab_size'] for a in s['arms'].values()})},
+        stream_hash_convention='SHA256 of sorted JSON mapping of index and ordered-shard file hashes; index binds document order/boundaries',
+        data_walks=[{k:r[k] for k in ('arm','budget','updates','estimated_flops','scored_tokens','input_positions','raw_bytes','supported','supported_with_margin','raw_bytes_exact','stream_available_flops')} for r in walks],
         training_budget=s['training']['budget_limit'],
         flop_estimator=FLOP_ESTIMATOR_VERSION)
     write_json(path,protocol)
     return protocol
+
+
+def reader_check_worker(directory, output, barrier, worker):
+    """Read-only shared shards; each process owns its cursor and receipt."""
+    from vocab_lm.data import ShardedDocuments
+    docs=ShardedDocuments(Path(directory))
+    if any(m.flags.writeable for m in docs.maps):
+        raise ValueError('Prepared shard mapping is writable')
+    data=TrainingData(DocumentPrefix(docs,min(32,len(docs))),context=1024,stride=512,seed=42,
+                      tokenizer=docs.metadata['tokenizer'],dataset=docs.metadata['dataset'])
+    initial=data.state_dict()
+    barrier.wait(timeout=600)
+    if worker==0:
+        for _ in range(7): data.batch(2)
+    barrier.wait(timeout=600)
+    if worker==1 and data.state_dict()!=initial:
+        raise ValueError('Another reader mutated this process cursor')
+    for _ in range(3): data.batch(2)
+    folder=Path(output)/str(worker);folder.mkdir(parents=True,exist_ok=True)
+    write_json(folder/'cursor.json',data.state_dict())
+    barrier.wait(timeout=600)
+    ShardedDocuments(Path(directory)) # Complete shard hashes still match after concurrent reads.
+    write_json(folder/'passed.json',dict(read_only_maps=True,cursor_isolated=True,hashes_unchanged=True))
+
+
+def concurrent_readers(s):
+    import multiprocessing as mp
+    context=mp.get_context('spawn');results={}
+    root=Path(s['output'])/'reader_check'
+    for size in sorted({a['vocab_size'] for a in s['arms'].values()}):
+        barrier=context.Barrier(2)
+        processes=[context.Process(target=reader_check_worker,args=(
+            str(Path(s['data']['root'])/'shards'/str(size)/'train'),str(root/str(size)),barrier,i)) for i in range(2)]
+        for p in processes:p.start()
+        for p in processes:p.join(1200)
+        for p in processes:
+            if p.is_alive():p.terminate();p.join()
+        results[str(size)]=all(p.exitcode==0 for p in processes)
+    receipt=dict(identity=dict(source=source_identity(),config_sha256=sha256(json.dumps(s,sort_keys=True).encode())),
+                 passed=all(results.values()),results=results)
+    write_json(Path(s['output'])/'concurrent_readers.json',receipt)
+    return receipt
 
 
 def large_preflight(s):
@@ -584,7 +630,9 @@ def large_preflight(s):
     check('storage_ceiling',all(r['vocabulary_serialized_inference_bytes']<=r['ceiling_bytes'] for a,r in allocations.items() if a!='dense32k'),'Measured standalone archive ceiling; Dense32K is explicitly outside it')
     check('storage_utilization',all(r['utilization']>=.95 for a,r in allocations.items() if a!='dense32k'),{a:r['utilization'] for a,r in allocations.items()})
     check('representation_selection',seal is not None and allocations==protocol['allocations'] if protocol else False,'Maximal Low-rank; factor-four grid Adaptive; exact training-only order and nearby allocations')
-    check('context_frozen',s['protocol']['context_frozen'] and s['training']['context']==1024 and s['model']['context']==1024,'1024; common microbatch2 x accumulation4 = 8192 executed positions')
+    check('context_frozen',s['protocol']['context_frozen'] and s['training']['context']==1024 and s['model']['context']==1024 and
+          s['training']['microbatch_size']==16 and s['training']['accumulation']==2,
+          '1024; common microbatch16 x accumulation2 = 32768 executed positions')
     check('validation_protocol',s['evaluation']==dict(protocol='fineweb_document_eos_c1024_s512_v2',context=1024,stride=512,eos_id=0),'New large-study protocol; every document target once; raw-byte BPB; toy protocol unchanged')
     check('diagnostic_availability',True,'Existing bounded spectra/norms/gradients/conditioning, native Adaptive bands and frequency quality; outside active update time')
     check('no_sealed_test_access',True,'Only declared standard FineWeb train source and train/validation local shards')
@@ -597,7 +645,10 @@ def large_preflight(s):
         try: profile=synthetic_profile(s)
         except (RuntimeError,OSError,ValueError) as error: profile=dict(identity=identity,rows=[],error=str(error))
     profile_ok=bool(profile and profile.get('identity')==identity and len(profile['rows'])==4 and
-                    all(r.get('status')=='PASS' and r.get('finite_loss') for r in profile['rows']))
+                    all(r.get('status')=='PASS' and r.get('finite_loss') and r.get('finite_gradients') and
+                        r.get('initialized_adamw') and r.get('checkpoint_roundtrip') and
+                        (r.get('microbatch'),r.get('accumulation'),r.get('context'))==(16,2,1024)
+                        for r in profile['rows']))
     check('runtime_profile_availability',profile_ok,'Four-arm configured 1024 complete updates, initialized AdamW, checkpoint I/O')
     check('server_profile',bool(profile_ok and gpu and profile['environment']==environment(torch.device(s['device'])) and
           all(max(r['peak_allocated'],r['peak_reserved'],r['checkpoint_peak_allocated'],r['checkpoint_peak_reserved'])<=24*2**30 for r in profile['rows'])),
@@ -615,6 +666,13 @@ def large_preflight(s):
         try: smoke=large_smoke(s)
         except (RuntimeError,OSError,ValueError) as error: smoke=dict(identity=identity,passed=False,error=str(error))
     check('real_data_smoke',bool(smoke and smoke.get('identity')==identity and smoke.get('passed')),'Two bounded real-data optimizer updates/arm with atomic checkpoint and reload; validation/diagnostic integration')
+    reader_path=root/'concurrent_readers.json'
+    readers=json.loads(reader_path.read_text()) if reader_path.exists() else None
+    if gpu and seal and (not readers or readers.get('identity')!=identity):
+        try: readers=concurrent_readers(s)
+        except Exception as error: readers=dict(identity=identity,passed=False,error=str(error))
+    check('concurrent_readers',bool(readers and readers.get('identity')==identity and readers.get('passed')),
+          'Both tokenizer streams: concurrent read-only maps, independent cursors, unchanged complete shard hashes')
     projections=budget_projections(s,allocations,profile) if seal else None
     check('unique_data_availability',bool(projections and all(r['supported_with_margin'] for r in projections if r['budget']==s['protocol']['data_supported_budget'])),
           'Exact complete-group shape walk; 20% compute headroom above declared supported budget, no wraparound')
@@ -664,7 +722,8 @@ def budget_projections(s, allocations, profile=None):
     import math
     root=Path(s['data']['root']); t=s['training']; rows=[]
     cache=root/'budget_projections.json'
-    key=dict(config=scientific_config(s),source=source_identity()['source_sha256'])
+    key=dict(config=scientific_config(s),source=source_identity()['source_sha256'],
+             preparation_sha256=file_hash(root/'preparation.json'),walk='exact_token_bytes_v2')
     if cache.exists() and json.loads(cache.read_text()).get('key')==key:
         result=json.loads(cache.read_text())['rows']
     else:
@@ -672,18 +731,25 @@ def budget_projections(s, allocations, profile=None):
         ceiling=int(s['protocol']['data_supported_budget']*s['protocol']['data_margin'])
         budgets=sorted(set(s['protocol']['candidate_budgets']+[ceiling]+([t['budget_limit']] if t['budget_limit'] else [])))
         for arm,a in s['arms'].items():
+            import numpy as np
+            from vocab_lm.data import ShardedDocuments
             meta=json.loads((root/'shards'/str(a['vocab_size'])/'train/index.json').read_text())
+            stream=ShardedDocuments(root/'shards'/str(a['vocab_size'])/'train')
+            byte_table=np.asarray(meta['byte_lengths'],dtype=np.int64)
             docs=[d for shard in meta['shards'] for d in shard['documents']]
             order=list(range(len(docs))); random.Random(t['seed']).shuffle(order)
             seal=json.loads((root/'preparation.json').read_text())
             model,_=construct(s,arm,torch.tensor(seal['training_counts'][str(a['vocab_size'])],dtype=torch.int64))
-            counters=dict(updates=0,estimated_flops=0,scored_tokens=0,input_positions=0,raw_bytes=0.)
+            counters=dict(updates=0,estimated_flops=0,scored_tokens=0,input_positions=0,raw_bytes=0)
             pending={}; batch=[]; group=[]; shape_costs={}
             for index in order:
                 d=docs[index]
+                shard,left,right=stream.locations[index]
+                ids=stream.maps[shard][left:right]
+                prefix=np.concatenate((np.zeros(1,dtype=np.int64),np.cumsum(byte_table[ids])))
                 for first in range(1,d['length'],t['stride']):
                     end=min(first+t['stride']-1,d['length']-1)
-                    batch.append((min(t['context'],end),end-first+1,d['raw_bytes']*(end-first+1)/(d['length']-1)))
+                    batch.append((min(t['context'],end),end-first+1,int(prefix[end+1]-prefix[first])))
                     if len(batch)<t['microbatch_size']: continue
                     group.append((len(batch),max(x[0] for x in batch),sum(x[1] for x in batch),sum(x[2] for x in batch)))
                     batch=[]
@@ -700,23 +766,21 @@ def budget_projections(s, allocations, profile=None):
                     counters['raw_bytes']+=sum(n for _,_,_,n in group)
                     group=[]
                 if len(pending)==len(budgets): break
-            for budget in s['protocol']['candidate_budgets']:
-                exposure=pending.get(budget,dict(counters,supported=False))
+            for budget in budgets:
+                exposure=pending.get(budget,dict(counters,supported=counters['estimated_flops']>=budget))
                 result.append(dict(arm=arm,budget=budget,**exposure,
                     supported_with_margin=pending.get(int(budget*s['protocol']['data_margin']),{}).get('supported',False)
                       if int(budget*s['protocol']['data_margin']) in budgets else
-                      (counters['estimated_flops']>=int(budget*s['protocol']['data_margin']))))
+                      (counters['estimated_flops']>=int(budget*s['protocol']['data_margin'])),
+                    stream_available_flops=counters['estimated_flops'],
+                    raw_bytes_exact=True))
         write_json(cache,dict(key=key,rows=result))
     for r in result:
         measured=next((p for p in (profile or {}).get('rows',[]) if p['arm']==r['arm'] and p['context']==1024),None)
         seconds=measured['update_seconds'] if measured and measured.get('status')=='PASS' else None
         server=bool(profile and profile['environment']['gpu_total_bytes']>=30*2**30)
-        row=dict(r,extrapolated=not r['supported'])
-        if row['extrapolated']:
-            scale=r['budget']/max(1,r['estimated_flops'])
-            for key in ('updates','scored_tokens','input_positions','raw_bytes'):
-                row[key]=r[key]*scale
-            row['updates']=math.ceil(row['updates'])
+        # An exhausted stream reports only observed complete groups, never fabricated exposure.
+        row=dict(r,extrapolated=False)
         row.update(local_gpu_hours=row['updates']*seconds/3600 if seconds and not server else None,
                  local_gpu_hours_flop_scaled=r['budget']/(measured['flops_per_update']/seconds)/3600 if seconds and not server else None,
                  checkpoint_count=math.ceil(row['updates']*seconds/300)+1 if seconds else None,
@@ -724,6 +788,7 @@ def budget_projections(s, allocations, profile=None):
                  server_gpu_hours=row['updates']*seconds/3600 if seconds and server else None,
                  server_projection='Requires measured server complete-update latency; no invented multiplier' if not server else 'Measured target profile; short full-shape timing projection')
         rows.append(row)
+    Path(s['output']).mkdir(parents=True,exist_ok=True)
     write_json(Path(s['output'])/'budget_projections.json',rows)
     return rows
 
@@ -766,6 +831,154 @@ def large_smoke(s):
     return receipt
 
 
+def batch_profile_settings(s):
+    """Profiling exception: config remains exact; source changes grant no train authority."""
+    protocol=json.loads(Path('artifacts/vocab_scaling_large/protocol.json').read_text())
+    if scientific_config(s)!=protocol['config']:
+        raise ValueError('Batch profiling requires unchanged frozen config; use CLI candidates')
+    if file_hash(Path('pyproject.toml'))!=protocol['project_sha256']:
+        raise ValueError('Frozen project dependencies differ')
+    directory=Path(s['arms'][s['baseline']]['tokenizer'])
+    for name,digest in protocol['tokenizer_hashes'].items():
+        if file_hash(directory/name)!=digest:
+            raise ValueError('Frozen tokenizer artifact hash mismatch')
+    seal_path=Path(s['data']['root'])/'preparation.json'
+    if file_hash(seal_path)!=protocol['preparation_sha256']:
+        raise ValueError('Frozen preparation differs')
+    return protocol,json.loads(seal_path.read_text())
+
+
+def batch_profile_row(s, arm, counts, microbatch, accumulation, limit):
+    """Disposable random-token complete updates; never saves model or training state."""
+    import gc, math, statistics
+    from vocab_lm.train import accumulated_backward, optimizer_update
+    device=torch.device(s['device']); context=s['training']['context']
+    row=dict(arm=arm,microbatch=microbatch,accumulation=accumulation,context=context,
+             sequences_per_update=microbatch*accumulation,
+             tokens_per_update=microbatch*accumulation*context)
+    model=opt=scaler=batch=batches=None
+    try:
+        gc.collect(); torch.cuda.empty_cache()
+        model,_=construct(s,arm,counts); model.to(device); model.train()
+        t=s['training']
+        opt=torch.optim.AdamW(model.parameters(),lr=t['learning_rate'],betas=tuple(t['betas']),
+                             eps=t['epsilon'],weight_decay=t['weight_decay'],foreach=False,fused=False)
+        scaler=torch.amp.GradScaler('cuda',enabled=False)
+        batch=dict(inputs=torch.randint(s['arms'][arm]['vocab_size'],(microbatch,context)),
+                   targets=torch.randint(s['arms'][arm]['vocab_size'],(microbatch,context)),
+                   tokens=microbatch*context)
+        batches=[batch]*accumulation
+        cost=accumulation*scaling_training_flops(model,microbatch,context)
+        row.update(flops_per_update=cost,estimated_budget_updates=t['budget_limit']//cost,
+                   projection_basis='Full context synthetic updates; real document shapes vary')
+        samples=[]; allocated=reserved=0
+        for step in range(max(2,s['profile_warmup'])+max(3,s['profile_updates'])):
+            torch.cuda.synchronize(device); torch.cuda.reset_peak_memory_stats(device)
+            started=time.perf_counter(); opt.zero_grad(set_to_none=True)
+            loss=accumulated_backward(model,batches,device=device,scaler=scaler,fp16=False)
+            successful=optimizer_update(model,opt,scaler,t['clip_norm'])
+            torch.cuda.synchronize(device); elapsed=time.perf_counter()-started
+            # FP32 optimizer_update checks the pre-clipping norm with error_if_nonfinite.
+            if not math.isfinite(loss) or not successful:
+                raise ValueError('Nonfinite loss or unsuccessful update')
+            allocated=max(allocated,torch.cuda.max_memory_allocated(device))
+            reserved=max(reserved,torch.cuda.max_memory_reserved(device))
+            row.update(peak_allocated=allocated,peak_reserved=reserved,
+                       finite_loss=True,finite_gradients=True)
+            if max(allocated,reserved)>=limit:
+                row.update(status='STOP',reason='Memory safety limit reached')
+                return row
+            if step>=max(2,s['profile_warmup']): samples.append(elapsed)
+        seconds=statistics.median(samples)
+        row.update(status='PASS',update_seconds=seconds,samples_seconds=samples,
+                   tokens_per_second=row['tokens_per_update']/seconds,
+                   estimated_flops_per_second=cost/seconds,
+                   estimated_active_hours=row['estimated_budget_updates']*seconds/3600)
+    except torch.cuda.OutOfMemoryError:
+        row.update(status='STOP',reason='CUDA OOM')
+    except (ValueError,RuntimeError) as exc:
+        row.update(status='FAIL',reason=str(exc),finite_loss=False,finite_gradients=False)
+    finally:
+        del batches,batch,scaler,opt,model
+        gc.collect(); torch.cuda.empty_cache()
+    return row
+
+
+def batch_size_profile(s):
+    """All-arm common geometry sweep, isolated from production preflight receipts."""
+    import math, statistics
+    protocol,seal=batch_profile_settings(s)
+    device=torch.device(s['device'])
+    if device.type!='cuda' or 'A40' not in torch.cuda.get_device_name(device):
+        raise ValueError('Batch study requires the actual A40; no substitute GPU timings')
+    torch.cuda.set_device(device.index if device.index is not None else torch.cuda.current_device())
+    if torch.cuda.get_device_properties(device).total_memory<40*10**9:
+        raise ValueError('A40 capacity below expected 40 GB')
+    root=Path(s['output'])/'batch_profiles'/time.strftime('%Y%m%d-%H%M%S')
+    root.mkdir(parents=True,exist_ok=False)
+    receipt=dict(profiling_only=True,authorizes_training=False,environment=environment(device),
+                 source=source_identity(),frozen_source=protocol['source_sha256'],config=s,
+                 memory_limit_gib=30,rows=[],recommendation=None)
+    limit=30*2**30; blocked_micro=None; previous=None
+    for sequences in (32,64,128,256):
+        common=[]
+        for micro in (8,16,32,64,128,256):
+            if micro>sequences or (blocked_micro is not None and micro>=blocked_micro): break
+            group=[]
+            for arm,a in s['arms'].items():
+                counts=torch.tensor(seal['training_counts'][str(a['vocab_size'])],dtype=torch.int64)
+                # Avoid a predictable unsafe allocation after a measured smaller microbatch.
+                prior=[r for r in receipt['rows'] if r['arm']==arm and r.get('status')=='PASS'
+                       and r['microbatch']<micro]
+                if prior:
+                    p=max(prior,key=lambda r:r['microbatch'])
+                    if max(p['peak_allocated'],p['peak_reserved'])*micro/p['microbatch']>=limit:
+                        blocked_micro=micro
+                        receipt['rows'].append(dict(arm=arm,microbatch=micro,
+                            accumulation=sequences//micro,sequences_per_update=sequences,
+                            tokens_per_update=sequences*1024,status='SKIP',reason='Conservative memory projection >=30 GiB'))
+                        break
+                row=batch_profile_row(s,arm,counts,micro,sequences//micro,limit)
+                receipt['rows'].append(row); group.append(row)
+                write_json(root/'measurements.json',receipt); print(json.dumps(row),flush=True)
+                if row['status']!='PASS': blocked_micro=micro; break
+            if len(group)==len(s['arms']) and all(r['status']=='PASS' for r in group):
+                common.append((math.exp(statistics.mean(math.log(r['tokens_per_second']) for r in group)),micro))
+            else: break
+            # Stop microbatch exploration after a clear throughput regression.
+            if len(common)>1 and common[-1][0]<common[-2][0]*.85: break
+        if not common:
+            receipt['stop_reason']='No safe common geometry'; break
+        best=max(common)
+        if previous and best[0]<previous*.85:
+            receipt['stop_reason']='Common throughput regressed >15%'; break
+        previous=best[0]
+    groups={}
+    for r in receipt['rows']:
+        if r['status']=='PASS': groups.setdefault((r['tokens_per_update'],r['microbatch']),[]).append(r)
+    candidates=[]
+    for key,rows in groups.items():
+        if len(rows)==len(s['arms']):
+            candidates.append((key,math.exp(statistics.mean(math.log(r['tokens_per_second']) for r in rows))))
+    if candidates:
+        peak=max(score for _,score in candidates)
+        near=[(key,score) for key,score in candidates if score>=.95*peak]
+        tokens=min(key[0] for key,_ in near)
+        (tokens,micro),score=max((item for item in near if item[0][0]==tokens),key=lambda item:item[1])
+        receipt['recommendation']=dict(tokens_per_update=tokens,microbatch=micro,
+            accumulation=tokens//(1024*micro),learning_rate=3e-4,
+            rationale='Smallest effective batch within 5% of peak common geometric-mean throughput',
+            owner_review='Synthetic throughput only; review reduced optimizer updates and unchanged LR before any protocol freeze')
+    write_json(root/'measurements.json',receipt)
+    keys=['arm','status','microbatch','accumulation','sequences_per_update','tokens_per_update',
+          'update_seconds','tokens_per_second','estimated_flops_per_second','peak_allocated','peak_reserved',
+          'finite_loss','finite_gradients','estimated_budget_updates','estimated_active_hours','reason']
+    with (root/'measurements.csv').open('w',newline='') as f:
+        writer=csv.DictWriter(f,fieldnames=keys,extrasaction='ignore');writer.writeheader();writer.writerows(receipt['rows'])
+    print(json.dumps(dict(output=str(root),recommendation=receipt['recommendation']),indent=2))
+    return receipt
+
+
 def synthetic_profile(s):
     """Bounded random-token profiling, never a language-model quality run."""
     import gc
@@ -773,13 +986,15 @@ def synthetic_profile(s):
     from vocab_lm.train import accumulated_backward, optimizer_update
     from vocab_lm.accounting import tensor_bytes
     root = Path(s['output']); root.mkdir(parents=True,exist_ok=True)
+    seal=json.loads((Path(s['data']['root'])/'preparation.json').read_text())
     receipt = dict(identity=dict(source=source_identity(), config_sha256=sha256(json.dumps(s,sort_keys=True).encode())),
                    environment=environment(torch.device(s['device'])), rows=[])
     for arm,a in s['arms'].items():
         for context in (1024,):
             gc.collect(); torch.cuda.empty_cache()
             # Fixed position capacity isolates sequence cost, including positional parameters.
-            model,_ = construct(s,arm,torch.zeros(a['vocab_size'],dtype=torch.int64)); model.to(s['device'])
+            counts=torch.tensor(seal['training_counts'][str(a['vocab_size'])],dtype=torch.int64)
+            model,_ = construct(s,arm,counts); model.to(s['device'])
             opt = torch.optim.AdamW(model.parameters(),lr=s['training']['learning_rate'],
                 betas=tuple(s['training']['betas']),eps=s['training']['epsilon'],
                 weight_decay=s['training']['weight_decay'],foreach=False,fused=False)
@@ -789,21 +1004,26 @@ def synthetic_profile(s):
                          targets=torch.randint(a['vocab_size'],(batch_size,context)),tokens=batch_size*context)
             batches = [batch]*s['training']['accumulation']
             row = dict(arm=arm,context=context,microbatch=batch_size,accumulation=len(batches),
+                       sequences_per_update=batch_size*len(batches),
                        tokens_per_update=batch_size*context*len(batches),raw_bytes_per_hour=None)
             samples=[]; allocated_peak=reserved_peak=0
             try:
-                for step in range(4):
+                warmup=max(2,s['profile_warmup'])
+                for step in range(warmup+max(3,s['profile_updates'])):
                     torch.cuda.synchronize(); torch.cuda.reset_peak_memory_stats(); started=time.perf_counter()
                     opt.zero_grad(set_to_none=True)
                     loss = accumulated_backward(model,batches,device=torch.device(s['device']),scaler=scaler,fp16=False)
                     optimizer_update(model,opt,scaler,s['training']['clip_norm'])
                     torch.cuda.synchronize()
-                    if step:
+                    if not torch.isfinite(torch.tensor(loss)):
+                        raise ValueError('Nonfinite profiling loss')
+                    if step>=warmup:
                         samples.append(time.perf_counter()-started)
                         allocated_peak=max(allocated_peak,torch.cuda.max_memory_allocated())
                         reserved_peak=max(reserved_peak,torch.cuda.max_memory_reserved())
                 seconds=statistics.median(samples)
-                row.update(status='PASS',finite_loss=bool(torch.isfinite(torch.tensor(loss))),
+                row.update(status='PASS',finite_loss=True,finite_gradients=True,
+                    initialized_adamw=bool(opt.state),warmup_updates=warmup,
                     update_seconds=seconds,samples_seconds=samples,**gpu_memory(s['device']),
                     parameter_bytes=tensor_bytes(list(model.parameters())),
                     gradient_bytes=tensor_bytes([p.grad for p in model.parameters()]),
@@ -812,6 +1032,8 @@ def synthetic_profile(s):
                     updates_per_hour=3600/seconds)
                 row.update(peak_allocated=allocated_peak,peak_reserved=reserved_peak)
                 row['flops_per_hour']=row['flops_per_update']*row['updates_per_hour']
+                row['tokens_per_second']=row['tokens_per_update']/seconds
+                row['estimated_flops_per_second']=row['flops_per_update']/seconds
                 # Separate instrumented update: profiler totals are coverage evidence,
                 # not replacement budget arithmetic or timed training latency.
                 opt.zero_grad(set_to_none=True)
@@ -832,6 +1054,9 @@ def synthetic_profile(s):
                 row['checkpoint_load_seconds']=time.perf_counter()-started
                 row['checkpoint_peak_allocated']=torch.cuda.max_memory_allocated()
                 row['checkpoint_peak_reserved']=torch.cuda.max_memory_reserved()
+                row['checkpoint_roundtrip']=all(torch.equal(v,restored.state_dict()[k]) for k,v in model.state_dict().items())
+                if not row['checkpoint_roundtrip']:
+                    raise ValueError('Profiling checkpoint model differs after reload')
                 del restored,payload
             except torch.cuda.OutOfMemoryError:
                 row.update(status='FAIL',reason='CUDA OOM')
@@ -936,9 +1161,12 @@ def main(argv=None):
     parser.add_argument("--config", default="configs/vocab_scaling_large.yaml")
     parser.add_argument("--arm", default="baseline16k")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument('--batch-study',action='store_true',help='A40 synthetic batch sweep; profile only, no training authority')
     parser.add_argument('--synthetic-stage',choices=['full','split','resumed'],help=argparse.SUPPRESS)
     parser.add_argument("--max-attempts", type=int, help="Graceful simulated job boundary; global budget remains frozen")
     args = parser.parse_args(argv)
+    if args.batch_study and args.operation!='profile':
+        parser.error('--batch-study is allowed only with profile')
     s = load_settings(args.config)
     torch.set_num_threads(s["threads"])
     torch.backends.cuda.matmul.allow_tf32 = False
@@ -966,7 +1194,10 @@ def main(argv=None):
     elif args.operation in {'synthetic-profile','profile'}:
         if not large_study(s):
             parser.error('Synthetic profiling requires large study config')
-        synthetic_profile(s)
+        if args.batch_study:
+            batch_size_profile(s)
+        else:
+            synthetic_profile(s)
     elif args.operation == 'smoke':
         if not large_study(s): parser.error('smoke requires the large study')
         print(json.dumps(large_smoke(s),indent=2))

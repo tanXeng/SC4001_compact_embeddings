@@ -1,190 +1,160 @@
-# Frozen large vocabulary-scaling study
+# Final large vocabulary-scaling study
 
-Run one exact owner-approved commit from the repository root. Source content, configuration, project dependencies, tokenizers and data hashes are enforced by [the frozen input protocol](../artifacts/vocab_scaling_large/protocol.json). This package prepares and verifies the study; no substantive large-model training or push was performed during preparation. The actual 32 GB server preflight is still mandatory.
+The owner-approved configuration is frozen in `configs/vocab_scaling_large.yaml`
+and `artifacts/vocab_scaling_large/protocol.json`. Scientific training has not
+begun. Use the final repository commit and require a passing A40 preflight before
+launching any arm. Source/configuration/tokenizer/data/environment drift blocks
+training; never edit a receipt to bypass that protection.
 
-## Scientific protocol
+## Scientific policy
 
-Question: at fixed estimated compute, does 16K to 32K improve raw-byte BPB, and can established compressed representations preserve that benefit near the 16K Dense vocabulary-storage ceiling?
+- **5e17 estimated FLOPs per arm**, `vocab_scaling_v1`, complete optimizer updates
+  only. Match estimated compute, not bytes, tokens, updates or wall time.
+- Exactly `baseline16k`, `dense32k`, `lowrank32k`, `adaptive32k`; no Hash or 64K.
+- Common FP32 Transformer: 10 layers, hidden 512, 8 heads, FFN 2048,
+  context/position capacity 1024, dropout .1; 32,033,792 backbone parameters.
+- **Microbatch 16 x accumulation 2 = 32 sequences / 32,768 executed positions per
+  update** at full context 1024. Training stride 512. Short document windows and
+  padding determine actual scored targets and per-update FLOPs.
+- AdamW LR **3e-4**, betas .9/.999, epsilon 1e-8, weight decay .01, clip norm 1,
+  constant schedule, seed 42. FP32 including logits/loss; TF32 disabled.
+- Dense tied 16K storage ceiling; Dense tied 32K is deliberately outside it.
+  Low-rank rank **252**, exact tied AB. Adaptive cutoffs **[12544,20736]**,
+  widths **[512,128,32]**, deterministic three-band factor-four allocation.
+  Existing initialization, tying and standalone archive accounting are unchanged.
+- Validation `fineweb_document_eos_c1024_s512_v2`: context1024/stride512,
+  document-local context, each intended text/EOS target once, raw UTF-8 byte BPB.
+  Screen documents [0,256); document-disjoint secondary [256,512). Initialization
+  and 25/50/75/100% budget screening; diagnostics at 50% and endpoint, outside
+  active update timing. Secondary once after all arms finish. No sealed-test reader.
 
-- **2.5e17 estimated FLOPs per arm**, unchanged `vocab_scaling_v1`, complete updates only; no wraparound or budget reset across jobs.
-- Common FP32 Transformer: **10 layers, hidden 512, 8 heads, FFN 2048, context/position capacity 1024**, dropout .1; **32,033,792 backbone parameters** excluding vocabulary.
-- Microbatch **2**, accumulation **4**, training stride **512**: 8,192 executed positions per full group; actual scored targets vary with document length/padding.
-- AdamW LR .0003, betas .9/.999, epsilon 1e-8, weight decay .01, clip norm 1, constant LR, seed **42**, FP32 including logits/loss, TF32 disabled.
-- Validation **fineweb_document_eos_c1024_s512_v2**: context1024/stride512, every intended text/closing-EOS target once, document-local context, exact raw UTF-8 byte BPB denominator. Same ordered raw validation documents for both tokenizers. Screen [0,256); secondary [256,512).
-- Screening at initialization and 25/50/75/100% budget, with final fitting boundary when necessary; secondary once after all four arms finish. Diagnostics at 50% and endpoint, outside active update timing.
-- Diagnostics: Dense norms/variance/sampled spectrum/frequency quality; Low-rank effective spectrum/rank, factors/gradients/conditioning and frequency quality; Adaptive native-band quality/mass, ranks, table/projection norms/gradients/conditioning and allocation. No Hash arm or Hash-specific diagnostics.
+FLOPs include GEMM forward/backward, full-square attention products/softmax,
+executed padded/overlapping positions, Low-rank input projection and Adaptive
+maximum-band input bound. Exclusions remain loss softmax, optimizer,
+LayerNorm/GELU, gathers/allocation, diagnostics and I/O. Profiler partial totals do
+not replace budget arithmetic.
 
-The small FP32 study motivated larger vocabularies and practical Low-rank/Adaptive baselines. Its corrected Adaptive allocation improved substantially over an accidentally underallocated configuration; the large pipeline therefore automatically enforces capacity utilization. Hash performed poorly and is excluded. Toy results used a different evaluation protocol, a small backbone, one seed and reused tiny validation subsets; no retroactive cross-protocol comparison or convergence claim is made. This budget is a comparative research choice around ten scored tokens/total parameter for the storage-matched arms, not a mandatory compute-optimal pretraining target.
+## Data and identities
 
-| Arm | Vocabulary | Structure | Vocabulary parameters | Archive bytes | Ceiling use | Total parameters |
-|---|---:|---|---:|---:|---:|---:|
-| adaptive32k | 32768 | Cutoffs12544/20736; widths512/128/32 | 8,200,192 | 33,327,936 | 99.3211% | 40,233,984 |
-| baseline16k | 16384 | Dense tied ceiling | 8,388,608 | 33,555,740 | 100.0000% | 40,422,400 |
-| dense32k | 32768 | Dense tied; explicitly out of storage budget | 16,777,216 | 67,110,172 | 199.9961% | 48,811,008 |
-| lowrank32k | 32768 | Rank252 exact tied AB | 8,386,560 | 33,547,800 | 99.9763% | 40,420,352 |
+FineWeb `HuggingFaceFW/fineweb`, sample-10BT, revision
+`9bb295ddab0e05d785b879661af7260fed5140fc`; pinned 014 then 013 parquet files.
+The expanded generation is `data/vocab_scaling_large_5e17/`. Its rounded target
+was derived from an exact complete-epoch capacity walk of the previous corpus;
+final ordered-token walks must support **6e17 FLOPs for every arm**, providing at
+least 20% compute headroom above 5e17. No extrapolated exposure authorizes a freeze.
 
-The 16K Dense standalone FP32 serialized archive is the exact ceiling. Low-rank rank252 fits; rank253 does not. Adaptive keeps three frequency bands, factor four, fixed middle V/4 and the largest fitting head on a 256-type grid. Nearby allocations, per-band parameters/buffers and actual archives are frozen in the protocol. Both compressed methods exceed 95%; no padding parameters or validation-selected capacity. Complete-training counts determine only the frequency ordering (EOS first, count descending, ID tie-break); count/order digests and band mass are frozen.
+The old generation remains intact. Frozen ordered-record digests verify its
+813,238-document training prefix and complete validation selection, independently
+of physical raw-file offsets. Fresh clones reproduce the same selection directly
+from pinned sources and verify those digests. Seed42 domain-separated order/split
+hashes, modulus16, global exact-text dedup and exclusion of all validation-bucket
+texts from training are unchanged. Both tokenizers see identical ordered raw
+training and validation documents. Preparation checks every reconstruction, token
+range, byte attribution and EOS boundary.
 
-FLOPs include GEMM forward/backward, full-square attention products/softmax, executed padded/overlapping positions, Low-rank input projection and Adaptive maximum-band input bound. Excludes loss softmax, optimizer, LayerNorm/GELU, gathers/allocation, diagnostics and I/O. Partial profiler totals are coverage evidence, never substituted into the budget estimator.
+Tokenizers are unchanged: nested byte-level BPE, maximum32K and its16K prefix,
+trained only on the original 65,182-document / 200,000,346-byte construction prefix.
+No retraining, normalization or synthetic prefix space; EOS0, literal EOS spelling
+remains ordinary text. Frozen tokenizer files and their hashes remain in Git.
 
-## Frozen data and tokenizer provenance
+The input protocol records exact documents/raw bytes/token counts, tokenizer and
+preparation hashes, all data-file hashes, representation allocations, schedules,
+source/config identities and exact 5e17/6e17 walk counters. Stream identities hash
+sorted mappings of shard-index and token-shard hashes; the index binds ordered
+boundaries. Exact walk bytes sum actual token byte lengths for scored positions,
+including zero-byte EOS; they are not proportional document-length estimates.
 
-FineWeb source: HuggingFaceFW/fineweb revision **9bb295ddab0e05d785b879661af7260fed5140fc**, sample-10BT, pinned 014 then 013 parquet files (2.723 GB download on a fresh clone). Seed42 domain-separated order/split hashes, modulus16 and global exact-text dedup; all reserved validation-bucket documents are excluded from training. The extended ordered raw train prefix and original validation selection are preserved. No sealed-test reader is provided.
+## Frozen data capacity and allocations
 
-The fixed tokenizers use the established byte-level nested BPE method: train maximum32K and derive its16K prefix from the exact 65,182-document, 200,000,346-byte training-only prefix; tokenizers0.22.1, min frequency2, complete byte alphabet, regex ByteLevel, no synthetic prefix space/normalization, EOS ID0. Literal EOS spelling stays ordinary text. Two independent fits matched IDs/merges. The 16K artifact matches the earlier 16K tokenizer. Data expansion did not retrain or modify either tokenizer.
+Prepared training: **1,137,468 documents / 3,500,002,716 unique raw bytes**. Validation remains **3,219 documents / 10,001,247 raw bytes**. Training target counts including EOS: 845,875,687 (16K), 792,710,829 (32K). Both final token streams passed complete reconstruction and disjointness checks. The measured maximum unique exposure at 5e17 is **2,657,873,921 bytes**; at the 6e17 headroom ceiling it is **3,188,972,045 bytes**. These actual-stream results justify rounding upward to a 3.5 GB preparation target; 6 GB was unnecessary.
 
-| Vocabulary | Train documents | Unique train bytes | Scored corpus targets incl EOS | Validation documents / bytes |
-|---|---:|---:|---:|---:|
-| 16384 | 813,238 | 2,500,000,732 | 604,206,923 | 3,219 / 10,001,247 |
-| 32768 | 813,238 | 2,500,000,732 | 566,201,245 | 3,219 / 10,001,247 |
+| Arm | Complete updates at 5e17 | Exact unique bytes at 5e17 | Exact unique bytes at 6e17 | 20% headroom |
+|---|---:|---:|---:|---|
+| adaptive32k | 51,081 | 2,657,873,921 | 3,188,972,045 | PASS |
+| baseline16k | 50,962 | 2,538,583,404 | 3,045,307,010 | PASS |
+| dense32k | 43,848 | 2,282,591,868 | 2,737,684,115 | PASS |
+| lowrank32k | 51,027 | 2,655,115,827 | 3,185,626,202 | PASS |
 
-`prepare` verifies every document reconstruction, EOS boundaries, complete ordered coverage and train/validation disjointness. Tokenizer construction-prefix provenance is verified against the expanded train selection. The final seeded-permutation shape walks verify every arm through **3e17 FLOPs**, providing at least **20% headroom** above the training budget. No quality metric selected any input. Full hashes and allocation details are in the small input protocol; generated receipts remain ignored.
+| Arm | Vocabulary parameters | Standalone archive bytes | Ceiling use |
+|---|---:|---:|---:|
+| adaptive32k | 8,200,192 | 33,327,936 | 99.3211% |
+| baseline16k | 8,388,608 | 33,555,740 | 100.0000% |
+| dense32k | 16,777,216 | 67,110,172 | 199.9961% |
+| lowrank32k | 8,386,560 | 33,547,800 | 99.9763% |
 
-| Tokenizer artifact | SHA-256 |
-|---|---|
-| base.json | `cf148983e4f5838d445c0eb0ccc6793997d03da9509910298b9094b29b1eb38c` |
-| expanded.json | `1192955ffd00b6723043a20d599defbe863ed1a48ea1612d9f47c1dbc1e2323b` |
-| nested.json | `c8a9dbbd0d78cd8ce5b6a1120acf3b4e170a907c2853238e335f6198f67bde5c` |
-| protocol.json | `455ca357ef2808f061f7b602b57478edc863aa26cb687afc575b1aaad3b5feea` |
+The ceiling is 33,555,740 bytes. Low-rank rank253 does not fit; rank252 does. Adaptive uses the largest fitting 256-type head grid point and exceeds 95% utilization. Dense32K remains the explicitly out-of-storage-budget control.
 
-Total Git tokenizer/input-protocol artifacts: **3,523,556 bytes**. Manifest JSON explicitly preserves the established CRLF bytes on all OSes; Git attributes disable rewriting these artifacts. Python source identity normalizes CRLF/LF for Windows/Linux checkout compatibility.
+## Environment and mandatory preflight
 
-## Environment and operator commands
-
-Use the exact owner-approved commit, a CUDA-compatible nominal32GB GPU, at least16GB host RAM (32GB recommended) and preferably30GB free disk for source/data, temporary archives and checkpoints. Prepare data before reserving the training GPU. GPU model is currently unknown. If the pinned CUDA/PyTorch build cannot run it, stop for owner review; never change precision/batch/representations yourself.
+The server has two NVIDIA A40 GPUs (driver reports 46,068 MiB each). Use one
+independent arm per GPU. No DDP or cross-arm gradient synchronization. All mutable
+model/optimizer/RNG/cursor/counter/log/checkpoint/schedule state lives under
+`results/vocab_scaling_large/{arm}/run/`. Prepared shard maps are read-only;
+preflight verifies independent concurrent readers for both tokenizers.
 
 ```bash
-python3.10 -m venv .venv
+python -m venv .venv
 source .venv/bin/activate
 python -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
 python -m pip install -e ".[dev]"
 python scripts/vocab_scaling.py prepare --config configs/vocab_scaling_large.yaml
-python scripts/vocab_scaling.py preflight --config configs/vocab_scaling_large.yaml
+CUDA_VISIBLE_DEVICES=0 python scripts/vocab_scaling.py preflight --config configs/vocab_scaling_large.yaml
+python -m pytest -q
+git diff --check
 ```
 
-On Windows use `.venv/Scripts/Activate.ps1`. Project dependencies pin the tested NumPy1.24.4, tokenizers0.22.1, PyYAML6.0.2, pyarrow18.1.0, matplotlib3.7.5 and pytest8.3.5. The system Python on the preparation machine has an older incompatible torch; use the project environment.
+On Windows activate `.venv/Scripts/Activate.ps1`. Dependencies remain pinned in
+`pyproject.toml`. Preparation reuses matching pinned caches and complete stages;
+mismatched/corrupt/incomplete stages fail while preserving evidence. Do not delete
+or overwrite a generation to recover silently.
 
-A fresh clone needs no external prepared corpus. `prepare` obtains pinned source files, reuses valid cache files, and generates identical local16K/32K train/validation shards under `data/vocab_scaling_large_final/`. Matching complete generations are verified without download/re-encoding. Corrupt/mismatched existing files fail without replacement. Completed stages are reusable; an interrupted incomplete shard stage requires owner recovery, preserving evidence.
+Final preflight checks the selected batch only: two warmup updates initializing
+AdamW, at least three synchronized complete-update timings, finite loss/gradients,
+checkpoint save/load, exact process-boundary resume, bounded two-update real-data
+integration, concurrent readers and exact data headroom. Allocated **and reserved**
+CUDA peaks, including checkpoint load, must stay **<=24 GiB**. Every mandatory
+check must PASS; a passing preflight creates the immutable execution protocol.
+There is no need to rerun the broad batch sweep.
 
-On the actual server, `preflight` automatically runs short all-arm configured optimizer-update profiles, checkpoint I/O, process-boundary resume and tiny real-data integration checks when receipts are absent/stale. It records exact CUDA/PyTorch/GPU/environment identity and enforces device capacity >=30GiB and **allocated/reserved peaks <=24GiB**, including checkpoint load. Local6GB profiles cannot satisfy this server gate. Every mandatory scientific/resource failure remains FAIL and exits1. A passing server preflight creates the immutable local execution protocol.
+## Training commands: execute only after final preflight passes
 
-After that preflight passes, run the assigned arm; repeat the identical command after an interruption:
+First pair, in separate processes:
 
 ```bash
-python scripts/vocab_scaling.py train --config configs/vocab_scaling_large.yaml --arm baseline16k --resume
-python scripts/vocab_scaling.py train --config configs/vocab_scaling_large.yaml --arm dense32k --resume
-python scripts/vocab_scaling.py train --config configs/vocab_scaling_large.yaml --arm lowrank32k --resume
-python scripts/vocab_scaling.py train --config configs/vocab_scaling_large.yaml --arm adaptive32k --resume
+CUDA_VISIBLE_DEVICES=0 python scripts/vocab_scaling.py train --config configs/vocab_scaling_large.yaml --arm baseline16k --resume
+CUDA_VISIBLE_DEVICES=1 python scripts/vocab_scaling.py train --config configs/vocab_scaling_large.yaml --arm dense32k --resume
 ```
 
-One command starts a fresh arm or resumes its last durable checkpoint. No scientific configuration is selected by the operator. Atomic checkpoints every 300 seconds. There is no wall-clock training limit: a normal run continues to the last complete update fitting the frozen 2.5e17 FLOP budget. SIGTERM/SIGINT request a stop at a complete-update boundary and save an atomic checkpoint where possible. Model, optimizer, scheduler, RNG, cursor, FLOPs/bytes/tokens/update counters and derived schedules restore; global budget never resets. The normal command runs until `result.json` reports `completion: budget_boundary`.
+When the corresponding A40 becomes free:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/vocab_scaling.py train --config configs/vocab_scaling_large.yaml --arm lowrank32k --resume
+CUDA_VISIBLE_DEVICES=1 python scripts/vocab_scaling.py train --config configs/vocab_scaling_large.yaml --arm adaptive32k --resume
+```
+
+Each command starts fresh or resumes exactly from its own durable checkpoint.
+Execution continues to the last complete update fitting within the global 5e17
+ceiling. No artificial wall-clock stop. Atomic checkpoints every 300 seconds;
+SIGTERM/SIGINT request a complete-update boundary and checkpoint. Resume restores
+optimizer, scheduler, RNG, cursor, counters and evaluation/diagnostic schedules;
+the budget never resets. Normal `result.json` completion is `budget_boundary`.
 
 ```bash
 python scripts/vocab_scaling.py status --config configs/vocab_scaling_large.yaml --arm baseline16k
 python scripts/vocab_scaling.py evaluate --config configs/vocab_scaling_large.yaml --arm baseline16k
 python scripts/vocab_scaling.py confirm --config configs/vocab_scaling_large.yaml --arm baseline16k
 python scripts/vocab_scaling.py report --config configs/vocab_scaling_large.yaml
-python -m pytest -q
 ```
 
-Repeat status/evaluate/confirm for other arms; confirm once after all four finish. Outputs: `results/vocab_scaling_large/{arm}/run/{manifest.json,last.pt,best.pt,training.jsonl,validation.jsonl,diagnostics.jsonl,result.json}`, plus root reports/plots/CSV and preflight receipts. All remain ignored. On termination preserve files and repeat the same train command. Stop/contact owner on missing/incompatible checkpoint, hash/source/environment change, failed preflight, OOM, nonfinite loss, stream exhaustion or absent scheduled outputs. Never delete counters or reset budget.
+Repeat status/evaluate/confirm per arm; confirmation runs after all four finish.
+Preserve checkpoints and receipts on failure. Stop on source/data/environment
+mismatch, OOM, nonfinite values, stream exhaustion or missing scheduled outputs.
 
-## Final local verification
+## Handoff scope
 
-Retained suite: **105 tests passed**; the suite is self-contained and does not require ignored research files. Mathematical Dense/Low-rank/Adaptive tying, shared checkpoint formats, storage/maximality/allocation, FLOPs/refusal, tokenizer/data coverage/disjointness, protocol/source enforcement, resume, graceful signal interruption and reporting remain covered. Historical Experiment001 diagnostic tests and old CLI/provenance-format tests were retired together with their dead implementations; shared production math/optimizer/data checks remain. No substantive large training occurred.
-
-All-arm warmed local profiles, exact process-boundary trajectories and two-update real-data integration smokes pass. Smoke quality is not used for configuration selection. Local timing is short RTX2060 evidence; target GPU throughput cannot be inferred from32GB VRAM. Exact final data walks and runtime projections are in ignored `results/vocab_scaling_large/budget_projections.json`.
-
-| Preflight item | Local status |
-|---|---|
-| backbone_equality | PASS |
-| checkpoint_resume | PASS |
-| configuration | PASS |
-| context_frozen | PASS |
-| dataset_identities | PASS |
-| diagnostic_availability | PASS |
-| expected_parameters | PASS |
-| flop_estimator | PASS |
-| immutable_protocol | PASS |
-| no_sealed_test_access | PASS |
-| no_unresolved_failure | FAIL |
-| precision | PASS |
-| real_data_smoke | PASS |
-| representation_selection | PASS |
-| runtime_profile_availability | PASS |
-| server_profile | FAIL |
-| interruption_readiness | PASS |
-| source_identity | PASS |
-| storage_ceiling | PASS |
-| storage_utilization | PASS |
-| tokenizer_identities | PASS |
-| train_validation_disjointness | PASS |
-| training_budget_frozen | PASS |
-| unique_data_availability | PASS |
-| validation_protocol | PASS |
-
-Only the actual server resource/profile check and its aggregate summary may remain FAIL locally. The input protocol/config/source/project/tokenizer/data identities are frozen. Final commit SHA is assigned when this reviewed candidate is committed; source-content identity is independently enforced.
-
-## Git handoff classification
-
-**A: required Git tree** (includes unchanged tracked modules and new small frozen artifacts):
-
-```text
-.gitattributes
-.gitignore
-artifacts/vocab_scaling_large/protocol.json
-artifacts/vocab_scaling_large/tokenizers/base.json
-artifacts/vocab_scaling_large/tokenizers/expanded.json
-artifacts/vocab_scaling_large/tokenizers/nested.json
-artifacts/vocab_scaling_large/tokenizers/protocol.json
-configs/testing.yaml
-configs/vocab_scaling_large.yaml
-docs/VOCAB_SCALING.md
-pyproject.toml
-README.md
-scripts/__init__.py
-scripts/vocab_scaling.py
-tests/conftest.py
-tests/fineweb/test_fineweb.py
-tests/training/test_compressed.py
-tests/training/test_standalone.py
-tests/training/test_training.py
-tests/training/test_vocab_scaling.py
-vocab_lm/__init__.py
-vocab_lm/accounting.py
-vocab_lm/checkpoint.py
-vocab_lm/config.py
-vocab_lm/data.py
-vocab_lm/evaluate.py
-vocab_lm/fineweb.py
-vocab_lm/model.py
-vocab_lm/runtime.py
-vocab_lm/tokenizer.py
-vocab_lm/train.py
-```
-
-**B: local-only, ignored:** `.local_history/`, `data/`, `results/`, `checkpoints/`, `.tmp/`, `.venv/` and Python caches. Historical modified research reports/configs/scripts were copied into `.local_history/pre_final_large/` before removal from the active tree. Previous large preparation receipts/checkpoints remain in `results/vocab_scaling_large_previous/`. The previous complete source snapshot reproduces its archived input-protocol source hash. No local historical evidence was deleted or Git history rewritten.
-
-**C: formerly tracked paths removed from the candidate Git tree after consolidation** (these are explicit tracked deletions, not merely unstaged files):
-
-```text
-configs/cfg.yaml
-configs/fineweb.yaml
-configs/vocab_scaling_full_toy.yaml
-configs/vocab_scaling_toy.yaml
-docs/FINEWEB_DATA_PROTOCOL.md
-docs/VOCAB_SCALING_FULL_PROTOCOL.md
-docs/VOCAB_SCALING_RESULTS.md
-scripts/experiment_001.py
-scripts/prepare_fineweb.py
-scripts/profile_vocab_memory.py
-scripts/train_dense.py
-scripts/vocab_scaling_full_report.py
-tests/training/test_hash_gate_e.py
-```
-
-`load_data` moved into existing `vocab_lm.data`; callers/tests now import it there. Experiment001-only diagnostics were not promoted into production; independent matrix/gradient/storage/restore tests were retained without that import. Old preparation/verifier code and competing CLIs were retired; large reporting stays in the one runner. README is only a pointer. There are no dedicated historical research files required in the current Git tree. Existing shared model/checkpoint/math modules retain generic representation-format support to avoid unrelated churn and weakened shared correctness coverage.
-
-Commit/staging must contain only the A tree plus C deletions. Corpus downloads/shards, checkpoints, local receipts and generated reports must never be added. Frozen tokenizer/protocol bytes are deliberately small regular Git files; no LFS or external tokenizer download is needed.
-
-**READY TO COMMIT/PUSH — SERVER PREFLIGHT REQUIRED BEFORE TRAINING**
+Git contains necessary source/tests, the final YAML, frozen tokenizer/input-protocol
+artifacts and concise operator documentation. FineWeb sources, prepared shards,
+checkpoints, logs, profiles and generated receipts/results remain ignored under
+`data/`, `results/`, `.tmp/` and `.local_history/`. Previous protocols and preparation
+evidence were archived locally before regeneration. Do not push without owner
+approval. This preparation pass does not launch scientific training.
