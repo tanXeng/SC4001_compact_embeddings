@@ -77,8 +77,6 @@ protocol:
   phase: frozen
   non_repeating: true
   context_frozen: true
-  job_seconds: 21600
-  stop_margin_seconds: 600
   training_documents: null
   secondary_status: document-disjoint secondary; not used for configuration selection
   target_vram_gib: 32

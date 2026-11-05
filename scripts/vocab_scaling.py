@@ -274,7 +274,6 @@ def preflight(s, **kwargs):
 
 
 def run(s, arm, *, resume=False, max_attempts=None, operation="train"):
-    job_started=time.perf_counter()
     if large_study(s):
         require_large_receipt(s)
     output = Path(s["output"])/arm/"run"
@@ -375,9 +374,6 @@ def run(s, arm, *, resume=False, max_attempts=None, operation="train"):
         nonlocal stopped
         stopped = True
     def should_stop():
-        nonlocal stopped
-        if large_study(s) and time.perf_counter()-job_started >= s['protocol']['job_seconds']-s['protocol']['stop_margin_seconds']:
-            stopped = True
         return stopped
     handlers = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
     start = time.perf_counter()
@@ -622,8 +618,8 @@ def large_preflight(s):
     projections=budget_projections(s,allocations,profile) if seal else None
     check('unique_data_availability',bool(projections and all(r['supported_with_margin'] for r in projections if r['budget']==s['protocol']['data_supported_budget'])),
           'Exact complete-group shape walk; 20% compute headroom above declared supported budget, no wraparound')
-    check('six_hour_readiness',checks['checkpoint_resume']['status']=='PASS' and checks['real_data_smoke']['status']=='PASS' and
-          s['training']['checkpoint_seconds']==300 and s['protocol']['stop_margin_seconds']>=600,'300s atomic checkpoints; timer stop at 5h50m; global counters retained; bounded smoke/schedule tests')
+    check('interruption_readiness',checks['checkpoint_resume']['status']=='PASS' and checks['real_data_smoke']['status']=='PASS' and
+          s['training']['checkpoint_seconds']==300,'300s atomic checkpoints; graceful signals; continuous global FLOP budget; bounded smoke/schedule tests')
     budget=s['training']['budget_limit']
     check('training_budget_frozen',type(budget) is int and budget>0 and budget<=s['protocol']['data_supported_budget'],
           'Owner must select global estimated FLOPs within the verified data ceiling; null is not runnable')
@@ -723,7 +719,6 @@ def budget_projections(s, allocations, profile=None):
             row['updates']=math.ceil(row['updates'])
         row.update(local_gpu_hours=row['updates']*seconds/3600 if seconds and not server else None,
                  local_gpu_hours_flop_scaled=r['budget']/(measured['flops_per_update']/seconds)/3600 if seconds and not server else None,
-                 six_hour_jobs=math.ceil(row['updates']*seconds/21000) if seconds else None,
                  checkpoint_count=math.ceil(row['updates']*seconds/300)+1 if seconds else None,
                  validation_count=6,secondary_validation_count=1,
                  server_gpu_hours=row['updates']*seconds/3600 if seconds and server else None,
@@ -814,10 +809,9 @@ def synthetic_profile(s):
                     gradient_bytes=tensor_bytes([p.grad for p in model.parameters()]),
                     adam_bytes=tensor_bytes(opt.state_dict()),buffer_bytes=tensor_bytes(list(model.buffers())),
                     flops_per_update=len(batches)*scaling_training_flops(model,batch_size,context),
-                    updates_per_hour=3600/seconds,updates_per_job=int((21600-600)/seconds))
+                    updates_per_hour=3600/seconds)
                 row.update(peak_allocated=allocated_peak,peak_reserved=reserved_peak)
                 row['flops_per_hour']=row['flops_per_update']*row['updates_per_hour']
-                row['budget_projections']={str(b):row['updates_per_job']*row['flops_per_update']/b for b in s['protocol']['candidate_budgets']}
                 # Separate instrumented update: profiler totals are coverage evidence,
                 # not replacement budget arithmetic or timed training latency.
                 opt.zero_grad(set_to_none=True)

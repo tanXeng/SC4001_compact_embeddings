@@ -232,14 +232,6 @@ def test_deferred_confirmation_and_initial_screen(tmp_path, monkeypatch):
     runner.run(s,'baseline8k',operation='confirm')
     with pytest.raises(ValueError,match='already recorded'):
         runner.run(s,'baseline8k',operation='confirm')
-    # Expiry includes preparation/startup, and must publish a resumable boundary.
-    s['output']=str(tmp_path/'expired')
-    s['protocol']=dict(study='large_v1',job_seconds=0,stop_margin_seconds=600)
-    monkeypatch.setattr(runner,'require_large_receipt',lambda _:None)
-    result=runner.run(s,'baseline8k')
-    assert result['completion']=='job_boundary'
-    assert result['counters']['attempted_updates']==0
-    assert (tmp_path/'expired/baseline8k/run/last.pt').exists()
 
 
 def test_frozen_input_protocol_rejects_config_source_and_overwrite(tmp_path,monkeypatch):
@@ -260,3 +252,72 @@ def test_frozen_input_protocol_rejects_config_source_and_overwrite(tmp_path,monk
     with pytest.raises(FileExistsError,match='Never replace'):
         runner.freeze_large_inputs(s)
     assert path.read_bytes()==before
+
+
+@pytest.mark.parametrize('signal_name',['SIGTERM','SIGINT'])
+def test_continuous_budget_periodic_checkpoint_and_signal_resume(tmp_path,monkeypatch,signal_name):
+    import importlib,json,signal
+    import scripts.vocab_scaling as runner
+    shared=importlib.import_module('vocab_lm.train')
+    _,make_data,identity=fixture()
+    s=small_settings();s.update(device='cpu',model=asdict(ModelConfig(1,8,2,16,256,.1)))
+    s['arms']={'baseline8k':dict(kind='dense',vocab_size=11)}
+    s['training']=asdict(TrainConfig(context=4,stride=2,microbatch_size=1,
+        budget_policy='flops',budget_limit=200000,flop_estimator='vocab_scaling_v1',
+        checkpoint_seconds=1e-12,checkpoint_interval=0))
+    s['protocol']={'study':'large_v1'} # No allocation duration or controlled deadline.
+    monkeypatch.setattr(runner,'require_large_receipt',lambda _:None)
+    def prepared(*args):
+        d=make_data();return d,d.documents,d.documents,identity,torch.zeros(11,dtype=torch.long)
+    monkeypatch.setattr(runner,'prepared',prepared)
+    handlers={}
+    def install(sig,handler):
+        old=handlers.get(sig);handlers[sig]=handler;return old
+    monkeypatch.setattr(runner.signal,'signal',install)
+    saves=[];save=shared.save_training_checkpoint
+    def record(path,model,state,**kwargs):
+        if path.name=='last.pt':saves.append(state['counters']['successful_updates'])
+        return save(path,model,state,**kwargs)
+    monkeypatch.setattr(shared,'save_training_checkpoint',record)
+    original_train=runner.train;interrupt=False
+    def wrapped(*args,**kwargs):
+        callback=kwargs['on_metrics']
+        def metrics(row):
+            callback(row)
+            if interrupt and row['successful_updates']==2:
+                handlers[getattr(signal,signal_name)](getattr(signal,signal_name),None)
+        kwargs['on_metrics']=metrics
+        return original_train(*args,**kwargs)
+    monkeypatch.setattr(runner,'train',wrapped)
+    s['output']=str(tmp_path/'full')
+    full=runner.run(s,'baseline8k')
+    assert full['completion']=='budget_boundary'
+    assert full['counters']['successful_updates']>2
+    assert any(0<n<full['counters']['successful_updates'] for n in saves)
+    full_model,full_payload=load_training_checkpoint(tmp_path/'full/baseline8k/run/last.pt')
+    s['output']=str(tmp_path/'split');interrupt=True
+    stopped=runner.run(s,'baseline8k')
+    assert stopped['completion']=='job_boundary' and stopped['counters']['successful_updates']==2
+    interrupt=False
+    resumed=runner.run(s,'baseline8k',resume=True)
+    assert resumed['completion']=='budget_boundary'
+    model,payload=load_training_checkpoint(tmp_path/'split/baseline8k/run/last.pt')
+    def equal(a,b):
+        if isinstance(a,torch.Tensor):assert torch.equal(a,b)
+        elif isinstance(a,dict):
+            assert a.keys()==b.keys()
+            for k in a:equal(a[k],b[k])
+        elif isinstance(a,(tuple,list)):
+            assert len(a)==len(b)
+            for x,y in zip(a,b):equal(x,y)
+        else:assert a==b
+    equal(full_model.state_dict(),model.state_dict())
+    for key in ('optimizer','scheduler','rng','data'):
+        equal(full_payload['training_state'][key],payload['training_state'][key])
+    for k,v in full['counters'].items():
+        if k not in ('active_seconds','wall_seconds'):assert resumed['counters'][k]==v
+    for name in ('validation.jsonl','diagnostics.jsonl'):
+        def events(folder):
+            return [(r.get('subset',r.get('name')),r['estimated_flops']) for r in
+                    map(json.loads,(tmp_path/folder/'baseline8k/run'/name).read_text().splitlines())]
+        assert events('full')==events('split')

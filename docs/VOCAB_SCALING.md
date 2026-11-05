@@ -47,11 +47,11 @@ The fixed tokenizers use the established byte-level nested BPE method: train max
 | nested.json | `c8a9dbbd0d78cd8ce5b6a1120acf3b4e170a907c2853238e335f6198f67bde5c` |
 | protocol.json | `455ca357ef2808f061f7b602b57478edc863aa26cb687afc575b1aaad3b5feea` |
 
-Total Git tokenizer/input-protocol artifacts: **3,523,620 bytes**. Manifest JSON explicitly preserves the established CRLF bytes on all OSes; Git attributes disable rewriting these artifacts. Python source identity normalizes CRLF/LF for Windows/Linux checkout compatibility.
+Total Git tokenizer/input-protocol artifacts: **3,523,556 bytes**. Manifest JSON explicitly preserves the established CRLF bytes on all OSes; Git attributes disable rewriting these artifacts. Python source identity normalizes CRLF/LF for Windows/Linux checkout compatibility.
 
 ## Environment and operator commands
 
-Use the exact owner-approved commit, a CUDA-compatible nominal32GB GPU, at least16GB host RAM (32GB recommended) and preferably30GB free disk for source/data, temporary archives and checkpoints. Prepare data before reserving a six-hour GPU allocation. GPU model is currently unknown. If the pinned CUDA/PyTorch build cannot run it, stop for owner review; never change precision/batch/representations yourself.
+Use the exact owner-approved commit, a CUDA-compatible nominal32GB GPU, at least16GB host RAM (32GB recommended) and preferably30GB free disk for source/data, temporary archives and checkpoints. Prepare data before reserving the training GPU. GPU model is currently unknown. If the pinned CUDA/PyTorch build cannot run it, stop for owner review; never change precision/batch/representations yourself.
 
 ```bash
 python3.10 -m venv .venv
@@ -68,7 +68,7 @@ A fresh clone needs no external prepared corpus. `prepare` obtains pinned source
 
 On the actual server, `preflight` automatically runs short all-arm configured optimizer-update profiles, checkpoint I/O, process-boundary resume and tiny real-data integration checks when receipts are absent/stale. It records exact CUDA/PyTorch/GPU/environment identity and enforces device capacity >=30GiB and **allocated/reserved peaks <=24GiB**, including checkpoint load. Local6GB profiles cannot satisfy this server gate. Every mandatory scientific/resource failure remains FAIL and exits1. A passing server preflight creates the immutable local execution protocol.
 
-After that preflight passes, run the assigned arm; repeat the identical command after every allocation:
+After that preflight passes, run the assigned arm; repeat the identical command after an interruption:
 
 ```bash
 python scripts/vocab_scaling.py train --config configs/vocab_scaling_large.yaml --arm baseline16k --resume
@@ -77,7 +77,7 @@ python scripts/vocab_scaling.py train --config configs/vocab_scaling_large.yaml 
 python scripts/vocab_scaling.py train --config configs/vocab_scaling_large.yaml --arm adaptive32k --resume
 ```
 
-One command starts a fresh arm or resumes its last durable checkpoint. No scientific configuration is selected by the operator. Atomic checkpoints every300seconds; stop at5h50m from runner startup, with600seconds before expected termination. SIGTERM/SIGINT stop at a complete update. Model, optimizer, scheduler, RNG, cursor, FLOPs/bytes/tokens/update counters and derived schedules restore; global budget never resets. Repeat until `result.json` reports `completion: budget_boundary`.
+One command starts a fresh arm or resumes its last durable checkpoint. No scientific configuration is selected by the operator. Atomic checkpoints every 300 seconds. There is no wall-clock training limit: a normal run continues to the last complete update fitting the frozen 2.5e17 FLOP budget. SIGTERM/SIGINT request a stop at a complete-update boundary and save an atomic checkpoint where possible. Model, optimizer, scheduler, RNG, cursor, FLOPs/bytes/tokens/update counters and derived schedules restore; global budget never resets. The normal command runs until `result.json` reports `completion: budget_boundary`.
 
 ```bash
 python scripts/vocab_scaling.py status --config configs/vocab_scaling_large.yaml --arm baseline16k
@@ -91,9 +91,9 @@ Repeat status/evaluate/confirm for other arms; confirm once after all four finis
 
 ## Final local verification
 
-Retained suite: **103 tests passed**; an exact candidate-tree export is also tested independently of ignored research files. Mathematical Dense/Low-rank/Adaptive tying, shared checkpoint formats, storage/maximality/allocation, FLOPs/refusal, tokenizer/data coverage/disjointness, protocol/source enforcement, resume, timed stop and reporting remain covered. Historical Experiment001 diagnostic tests and old CLI/provenance-format tests were retired together with their dead implementations; shared production math/optimizer/data checks remain. No substantive large training occurred.
+Retained suite: **105 tests passed**; the suite is self-contained and does not require ignored research files. Mathematical Dense/Low-rank/Adaptive tying, shared checkpoint formats, storage/maximality/allocation, FLOPs/refusal, tokenizer/data coverage/disjointness, protocol/source enforcement, resume, graceful signal interruption and reporting remain covered. Historical Experiment001 diagnostic tests and old CLI/provenance-format tests were retired together with their dead implementations; shared production math/optimizer/data checks remain. No substantive large training occurred.
 
-All-arm warmed local profiles, exact process-boundary trajectories and two-update real-data integration smokes pass. Smoke quality is not used for configuration selection. Local timing is short RTX2060 evidence; target GPU throughput cannot be inferred from32GB VRAM. Exact final data walks and job projections are in ignored `results/vocab_scaling_large/budget_projections.json`.
+All-arm warmed local profiles, exact process-boundary trajectories and two-update real-data integration smokes pass. Smoke quality is not used for configuration selection. Local timing is short RTX2060 evidence; target GPU throughput cannot be inferred from32GB VRAM. Exact final data walks and runtime projections are in ignored `results/vocab_scaling_large/budget_projections.json`.
 
 | Preflight item | Local status |
 |---|---|
@@ -113,7 +113,7 @@ All-arm warmed local profiles, exact process-boundary trajectories and two-updat
 | representation_selection | PASS |
 | runtime_profile_availability | PASS |
 | server_profile | FAIL |
-| six_hour_readiness | PASS |
+| interruption_readiness | PASS |
 | source_identity | PASS |
 | storage_ceiling | PASS |
 | storage_utilization | PASS |

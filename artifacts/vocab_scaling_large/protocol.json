@@ -249,7 +249,6 @@
       "context_frozen": true,
       "data_margin": 1.2,
       "data_supported_budget": 250000000000000000,
-      "job_seconds": 21600,
       "non_repeating": true,
       "peak_limit_gib": 24,
       "phase": "frozen",
@@ -287,7 +286,6 @@
         }
       },
       "secondary_status": "document-disjoint secondary; not used for configuration selection",
-      "stop_margin_seconds": 600,
       "study": "large_v1",
       "target_vram_gib": 32,
       "training_documents": null
@@ -1039,10 +1037,10 @@
   "preparation_sha256": "ed008c018bd7e355d8f61ee63f513c9e9ca5d477e96fc97eea35eba9631aefc7",
   "project_sha256": "05e66ff1f1c76ed8b095605914642b10f50163da809231dc5821a2abdb5b6364",
   "source_at_preparation": {
-    "git_commit": "d100702ece6df262d40c1a3e7fa6e65084c4aabf",
-    "source_sha256": "b828501b4b96a70339682c0f150cfde8667059ec5073a8f08666200b69a93a29"
+    "git_commit": "746a205234d940a6800cf4b63c5f445b503a2d86",
+    "source_sha256": "a82332bafee80dcf917375a12d0cf6f25e376e1d939fd22edb762deaed4b016e"
   },
-  "source_sha256": "b828501b4b96a70339682c0f150cfde8667059ec5073a8f08666200b69a93a29",
+  "source_sha256": "a82332bafee80dcf917375a12d0cf6f25e376e1d939fd22edb762deaed4b016e",
   "tokenizer_hashes": {
     "base.json": "cf148983e4f5838d445c0eb0ccc6793997d03da9509910298b9094b29b1eb38c",
     "expanded.json": "1192955ffd00b6723043a20d599defbe863ed1a48ea1612d9f47c1dbc1e2323b",
