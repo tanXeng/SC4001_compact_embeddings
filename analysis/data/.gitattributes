@@ -1,0 +1,2 @@
+# Analysis data and deterministic gzip streams retain their exact bytes.
+* -text whitespace=cr-at-eol

@@ -1,0 +1,2 @@
+# Frozen 64K artifacts retain their exact bytes.
+* -text whitespace=cr-at-eol

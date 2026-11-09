@@ -1,0 +1,21 @@
+{
+  "research_question": "At the same Transformer backbone, 5e17 vocab_scaling_v1 complete-update FLOPs and FP32, can a 65536-token compressed vocabulary retain or improve BPB under the frozen 16K Dense archive ceiling?",
+  "historical_evidence": "Completed 16K/32K values are immutable results from e579a46. No baseline retraining, no historical confirmation rerun, no historical source/config/protocol/output edits.",
+  "hash_literature_audit": {
+    "source": "https://proceedings.neurips.cc/paper/2017/file/f0f6ba4b5e0000340312d33c212c3ae8-Paper.pdf",
+    "sections": [
+      "3: Hash Embeddings",
+      "5.3: without dictionary",
+      "5.4: using dictionary"
+    ],
+    "finding": "The paper uses weighted sums of shared component vectors, trainable token importance, and typically k=2. Its dictionary variant allows one distinct importance row per token. We retain k=2 and learned coefficients, and omit the optional coefficient concatenation to preserve width 512.",
+    "deviations": "We use fixed BPE subwords and tie the same effective table to autoregressive full-softmax output. Component capacity is selected solely by serialized storage rather than cross-validation. FP32 Transformer/AdamW training follows the frozen project recipe, not the paper classification architecture. The selected V/B ratio is about 4.2, below the paper typical >10 regime; this follows the mandated maximal fixed-storage allocation, not validation tuning.",
+    "project_reference": "Existing vocab_lm.model.HashVocabulary, SHA256 assignments, seeds [17,29], normal importance std=1/sqrt(2); historical hash16k manifest confirms seeds."
+  },
+  "adaptive_policy": "Reuse three_band_factor4_middle_quarter_grid256_v1 unchanged: three widths [512,128,32], middle band V/4, maximum fitting head on 256-type grid. Complete training counts order types, EOS first, decreasing frequency then ID. No manually scaled cutoffs and no validation selection.",
+  "compute": "Existing vocab_scaling_v1 is reused unchanged for all four kinds, including its already-supported Hash effective-table graph. No historical FLOP recalculation.",
+  "data": "Read the frozen FineWeb 3.5GB selection by identity. New uint16 65536-token shards and independent manifests; same screening [0,256) and confirmation [256,512) raw documents.",
+  "hash_diagnostics": "Actual LM CE on two predetermined training document prefixes, at most 512 targets each. Attribute up to eight lowest shared bucket IDs among observed inputs, at most four lowest token IDs per bucket. Report separate tied input, output and combined gradients only at endpoint. Diagnostic smoke verifies this once, with no configuration selection.",
+  "authorization": "No substantive training in this task. A later owner-reviewed training_authorization.json must bind owner_approved=true, exact preflight identity, and experiment_sha256. This pass never creates it.",
+  "execution_plan": "One independent arm per A40, no DDP: GPU0 Dense64K; GPU1 LowRank64K; then Adaptive64K/Hash64K as devices free, informed by measured times."
+}

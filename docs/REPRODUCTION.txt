@@ -1,0 +1,192 @@
+SCIENTIFIC REPRODUCTION AND ANALYSIS
+
+Model: pre-LayerNorm causal Transformer, 10 layers, width512, 8 heads, FFN2048,
+context capacity1024, dropout0.1; 32033792 backbone parameters. All vocabulary
+parameters are FP32 and input/output tied. Dense uses one Vx512 table. Low-rank
+uses E=AB. Adaptive uses frequency-ordered projected bands of widths512/128/32,
+EOS in the head, deterministic training-only ordering. Hash uses two deterministic
+SHA256 component assignments per subword, shared vectors and trainable token
+importance coefficients, with the same effective table on both autoregressive paths.
+Hash paper: https://proceedings.neurips.cc/paper/2017/file/f0f6ba4b5e0000340312d33c212c3ae8-Paper.pdf
+Tied autoregressive output, BPE subwords, fixed-storage allocation and Transformer
+training are project adaptations; k=2 and learned importance retain the baseline.
+
+Frozen inputs: configs/vocab_scaling_large.yaml and artifacts/vocab_scaling_large/
+identify the completed study at commit e579a46293a575153b22509abe588d21f44ffcea.
+The separate 64K YAML, tokenizer protocol and experiment.json freeze the extension.
+All scientific source/config/tokenizer/protocol files are retained unchanged.
+
+Data: FineWeb sample-10BT revision9bb295ddab0e05d785b879661af7260fed5140fc;
+pinned 014 then013 parquet sources, exact SHA256 identities in the protocols.
+Deterministic seed42 domain-separated split/order, global exact-text deduplication,
+train/validation disjointness, frozen training prefix and validation selection.
+Training pool:1137468 documents/3500002716 bytes. Validation:3219/10001247 bytes.
+Frozen byte-level BPE family was fitted only on the original65182 training
+documents/200000346 bytes; no normalization or synthetic prefix space, EOS0,
+literal EOS spelling remains ordinary text. 64K preserves the exact32K prefix.
+Prepared shards preserve document boundaries and reconstruct every raw byte;
+training/evaluation windows do not attend across documents. Datasets stay local.
+
+Storage: actual standalone torch.save vocabulary archives, including persistent
+integer buffers and specification/container overhead. Frozen16K Dense ceiling:
+33555740 bytes. Dense32K/64K are exempt controls. Low-rank32K rank252;64K rank127.
+Adaptive32K cutoffs12544/20736;64K8448/24832. Policy: three factor-four bands,
+fixed middle V/4, largest fitting256-type head grid. Hash64K15615 components,
+seeds17/29,k=2. Binary storage searches verify the selected and next non-fitting
+rank/component count. Allocation never uses validation quality.
+
+Compute/optimization: 5e17 vocab_scaling_v1 estimated FLOPs per arm. Complete
+optimizer updates only: spent<=budget<spent+next-update-cost; unused FLOPs are
+reported. Counts include executed padded/overlapping positions, GEMM forward and
+backward, full-square attention and the frozen representation-specific graph.
+Exclusions include optimizer, loss softmax, normalization/GELU, indexing, I/O and
+diagnostics. This is a convention, not measured hardware operations. No historical
+FLOP values were revised. Match compute, not tokens/bytes/updates/wall time.
+Context1024,stride512,microbatch16,accumulation2,seed42,FP32,TF32 disabled;
+AdamW3e-4,betas0.9/0.999,epsilon1e-8,weight decay0.01,clip norm1,constant schedule.
+Atomic checkpoints every300seconds; safe signal stopping and exact state resume.
+One independent arm per A40; no DDP. Exact settings are in the YAMLs.
+
+Evaluation: fineweb_document_eos_c1024_s512_v2; each intended text/EOS target once,
+screening raw documents[0,256), document-disjoint confirmation[256,512).
+BPB=sum target NLL/(ln(2)*raw UTF8 target bytes). Initialization and25/50/75/final
+screening; half-budget/endpoint diagnostics outside active update timing.
+Confirmation is once-only. Existing confirmations are immutable and already final.
+Bounded Hash interference uses the first two fixed training-document prefixes,
+at most512 targets/document and8 hash-selected buckets/4 token contributions;
+input/output/combined paths. No attribution is run continuously.
+
+FRESH-CLONE REPRODUCTION (independent runs, not the historical launch gates)
+
+  git clone <repository-url> vocab-study
+  cd vocab-study
+  python3.11 -m venv .venv
+  . .venv/bin/activate
+  python -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+  python -m pip install -e ".[dev]"
+  python -m pytest -q
+
+Use Python3.11 (original server3.11.10), the pinned dependencies, an NVIDIA CUDA
+GPU with>=30GiB VRAM, >=16GiB host RAM and preferably>=40GB free disk. One arm per
+GPU; no DDP. A40 was the original GPU. CPU machines can verify inputs/prepare data
+and analyze outputs, but cannot pass GPU preflight or authorize training. In
+PowerShell activate .venv/Scripts/Activate.ps1 and set $env:CUDA_VISIBLE_DEVICES.
+
+The public entry point is scripts/reproduce.py. A simple --run name selects only
+results/reproductions/<run>/<study> and shared data/reproductions/{common,64k}.
+It cannot select or overwrite the historical results or committed analysis data.
+No Git worktree recreation, old machine receipt, authorization or result folder
+is needed. No tokenizer is refitted. --study large means16K/32K; --study64k means
+all four64K arms. Use the actual spelling --study 64k in commands below.
+
+1. CPU/local scientific identity verification (also runs before every operation):
+  python scripts/reproduce.py verify --study large --run replication1
+  python scripts/reproduce.py verify --study 64k --run replication1
+
+2. Download pinned FineWeb and prepare/verify exact document selection and shards:
+  python scripts/reproduce.py prepare --study 64k --run replication1
+The64K command also prepares the common16K/32K generation, so it suffices for both.
+For only the original study, use prepare --study large instead. The original
+pinned source acquisition/selection/shard functions are reused, including exact
+source/data hashes and training-prefix/validation checks. Private cache files are
+optional reuse opportunities, never required inputs. CPU preparation can take
+hours; downloads are about2.7GB, and prepared data consume additional disk.
+
+3. On the actual training GPU/machine, generate independent resource evidence:
+  CUDA_VISIBLE_DEVICES=0 python scripts/reproduce.py preflight --study large --run replication1
+  CUDA_VISIBLE_DEVICES=0 python scripts/reproduce.py preflight --study 64k --run replication1
+This runs only bounded profiling, process-boundary resume tests and real-data
+smoke/diagnostic checks. It verifies the frozen allocations, exact20% compute
+headroom, common16x2 batch, finite loss/gradients and checkpoint roundtrips.
+Large-study memory cap24GiB;64K cap38GiB, additionally below90% of device capacity.
+No batch, LR, architecture or precision search/fallback exists. Failure cannot
+issue a passing receipt. Intermediate machine files stay ignored under results/.
+
+4. Explicitly accept and authorize your own frozen reproduction protocol:
+  CUDA_VISIBLE_DEVICES=0 python scripts/reproduce.py authorize --study large --run replication1 --accept-frozen-protocol
+  CUDA_VISIBLE_DEVICES=0 python scripts/reproduce.py authorize --study 64k --run replication1 --accept-frozen-protocol
+This creates reproduction_authorization.json bound to YOUR passing local preflight,
+source identity, config, scientific-lock hash and verified data. Historical owner
+approvals are neither read nor copied. Keep the checkout/environment fixed after
+preflight; source/data/environment changes reject authorization/resume. New code
+or a different machine requires a new independent run name and preflight.
+
+5. Training/resume, one arm per visible GPU (each receives exactly the frozen
+complete-update budget). Sequential examples; separate GPUs can run independent
+processes with CUDA_VISIBLE_DEVICES=0/1 when available:
+  for arm in baseline16k dense32k lowrank32k adaptive32k; do
+    CUDA_VISIBLE_DEVICES=0 python scripts/reproduce.py train --study large --run replication1 --arm "$arm" --resume
+  done
+  for arm in dense64k lowrank64k adaptive64k hash64k; do
+    CUDA_VISIBLE_DEVICES=0 python scripts/reproduce.py train --study 64k --run replication1 --arm "$arm" --resume
+  done
+--resume starts fresh if no checkpoint exists, otherwise restores the same frozen
+model/optimizer/scheduler/RNG/cursor/counters/schedules. SIGTERM/SIGINT stop at a
+safe boundary; checkpoints remain atomic every300seconds. No global budget reset.
+
+6. Final screening, then once-only confirmation AFTER all four arms of a study
+finish:
+  for arm in baseline16k dense32k lowrank32k adaptive32k; do
+    CUDA_VISIBLE_DEVICES=0 python scripts/reproduce.py evaluate --study large --run replication1 --arm "$arm"
+  done
+  for arm in baseline16k dense32k lowrank32k adaptive32k; do
+    CUDA_VISIBLE_DEVICES=0 python scripts/reproduce.py confirm --study large --run replication1 --arm "$arm"
+  done
+  for arm in dense64k lowrank64k adaptive64k hash64k; do
+    CUDA_VISIBLE_DEVICES=0 python scripts/reproduce.py evaluate --study 64k --run replication1 --arm "$arm"
+  done
+  for arm in dense64k lowrank64k adaptive64k hash64k; do
+    CUDA_VISIBLE_DEVICES=0 python scripts/reproduce.py confirm --study 64k --run replication1 --arm "$arm"
+  done
+Confirmation is refused before entering the runner if already present. Never run
+confirmation on original completed outputs; the public wrapper cannot target them.
+
+7. Endpoint diagnostics execute automatically in the unchanged completion paths.
+Export their stored records and the new run's metrics (no repeated attribution):
+  python scripts/reproduce.py diagnostics --study large --run replication1
+  python scripts/reproduce.py report --study large --run replication1
+  python scripts/reproduce.py diagnostics --study 64k --run replication1
+  python scripts/reproduce.py report --study 64k --run replication1
+reproduction_report.json contains this run's results, observations and diagnostics,
+explicitly labeled independent_reproduction. It never reads historical results.
+
+8. Analyze the COMMITTED frozen outputs in analysis/data/ using SCHEMA.txt. They
+are the published completed experiments, not the independent run's new outputs.
+Full compressed update and gradient histories are canonical, lossless and complete.
+
+INTEGRITY SEPARATION: artifacts/reproduction/scientific_inputs.json pins unchanged
+historical scientific code/config/tokenizer/protocol bytes (Python/YAML line endings
+are normalized, matching the historical source-hash convention). Changing settings,
+representations, tokenizer data or scientific code is rejected before execution.
+The thin wrapper loads private instances of the unchanged historical runners and
+replaces only their historical-execution receipt gates with independent local
+ones. Trainers, evaluators, diagnostics, accounting and checkpoint systems are not
+duplicated. Historical gate functions/imports and scientific evidence are unchanged.
+Small historical manifests remain provenance; their listed private checkpoints or
+receipts are NOT prerequisites for independent reproduction. Public download access,
+matching hashes and actual GPU preflight remain prerequisites. Floating-point
+results need not be bit-identical across GPU/software environments; the protocol,
+seed, data selection and accounting are fixed and new machine identity is recorded.
+
+ANALYSIS: analysis/data/SCHEMA.txt gives formats and column scopes. All eight arms
+have explicit historical/new provenance. Load gzip CSVs with Python gzip+csv or
+pandas.read_csv. Plot evaluation_history scheduled_curve_point rows against
+estimated_flops/compute_fraction for BPB curves; training_history update_token_nll
+against estimated_flops for training curves. Use run_summary for final BPB,
+exposure/time/storage/parameters/memory tables, frequency_metrics for grouped
+quality, and representation_diagnostics values for spectra, norms, ranks,
+conditioning, band capacity, occupancy/collisions/importance and interference.
+Every update is retained; generated figures/reports and redundant table copies
+are excluded. The archive checks in checkpoint_verification preserve final64K
+boundary evidence without committing model weights.
+
+LIMITATIONS: one seed; no uncertainty intervals. BPB is comparable on common raw
+documents; token NLL/accuracy across tokenizers have different units. Sampled ranks
+use128 effective rows; full Low-rank spectra are separately labeled. Adaptive bands
+are not rank-frequency thirds. Training mass diagnostics use full prepared counts,
+not each arm's consumed prefix. Group-specific byte counts were not logged.
+Wall time is the runner counter, not calendar turnaround. Reserved CUDA memory
+includes cache: actual64K training peaks21.89-22.30GiB allocated and41.23-42.95GiB
+reserved. Preflight and checkpoint device spellings cuda/cuda:0 differ; all other
+environment fields match. No retrospective tuning, additional seeds or new
+outcome-driven diagnostics were performed in finalization.

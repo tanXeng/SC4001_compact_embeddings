@@ -1,0 +1,190 @@
+{
+  "adaptive64k": {
+    "boundary_proved": true,
+    "checkpoint": "results/vocab_scaling_64k/adaptive64k/run/last.pt",
+    "checkpoint_and_result_counters_agree": true,
+    "checkpoint_sha256": "b894dbbba8534c26b3271ba21667f60e01e189c7cce9e48df74550551a9dffc6",
+    "checkpoint_wall_seconds": 95196.36664362438,
+    "counters": {
+      "active_seconds": 92585.79730620235,
+      "attempted_updates": 51368,
+      "estimated_flops": 499998001804793088,
+      "input_positions": 1657625712,
+      "microsteps": 102736,
+      "raw_bytes": 2746691425,
+      "scored_tokens": 597036261,
+      "skipped_updates": 0,
+      "successful_updates": 51368,
+      "wall_seconds": 95202.36964003555
+    },
+    "environment_scientific_fields_match": true,
+    "exact_metadata_cursor_replay": true,
+    "formula_flops_recomputed_from_shapes": 499998001804793088,
+    "frozen_backbone_configuration_matches": true,
+    "matches_frozen_preflight_walk": true,
+    "model_finite_fp32": true,
+    "next_complete_update_flops": 9908489551872,
+    "next_complete_update_shapes": [
+      [
+        16,
+        1024
+      ],
+      [
+        16,
+        1024
+      ]
+    ],
+    "optimizer_finite": true,
+    "standalone_vocabulary_archive_verified": 33327936,
+    "status": "PASS",
+    "stored_device_label_difference": {
+      "device": {
+        "checkpoint": "cuda:0",
+        "preflight": "cuda"
+      }
+    },
+    "stored_scheduler_rng_cursor_verified": true,
+    "unused_flops": 1998195206912
+  },
+  "dense64k": {
+    "boundary_proved": true,
+    "checkpoint": "results/vocab_scaling_64k/dense64k/run/last.pt",
+    "checkpoint_and_result_counters_agree": true,
+    "checkpoint_sha256": "4ba0366f5eefe72f35bc3dcb05cc458dab7d9b40105b777a9b96ca071f4af93a",
+    "checkpoint_wall_seconds": 36669.4994733464,
+    "counters": {
+      "active_seconds": 34808.406739741564,
+      "attempted_updates": 34207,
+      "estimated_flops": 499996992595898880,
+      "input_positions": 1103812160,
+      "microsteps": 68414,
+      "raw_bytes": 1830017293,
+      "scored_tokens": 397745997,
+      "skipped_updates": 0,
+      "successful_updates": 34207,
+      "wall_seconds": 36679.995766889304
+    },
+    "environment_scientific_fields_match": true,
+    "exact_metadata_cursor_replay": true,
+    "formula_flops_recomputed_from_shapes": 499996992595898880,
+    "frozen_backbone_configuration_matches": true,
+    "matches_frozen_preflight_walk": true,
+    "model_finite_fp32": true,
+    "next_complete_update_flops": 14867566166016,
+    "next_complete_update_shapes": [
+      [
+        16,
+        1024
+      ],
+      [
+        16,
+        1024
+      ]
+    ],
+    "optimizer_finite": true,
+    "standalone_vocabulary_archive_verified": 134219036,
+    "status": "PASS",
+    "stored_device_label_difference": {
+      "device": {
+        "checkpoint": "cuda:0",
+        "preflight": "cuda"
+      }
+    },
+    "stored_scheduler_rng_cursor_verified": true,
+    "unused_flops": 3007404101120
+  },
+  "hash64k": {
+    "boundary_proved": true,
+    "checkpoint": "results/vocab_scaling_64k/hash64k/run/last.pt",
+    "checkpoint_and_result_counters_agree": true,
+    "checkpoint_sha256": "cafcc222b420b2444ca387121e52a5828157f497eeadaaac94b6573cca06f6a2",
+    "checkpoint_wall_seconds": 36510.65894023515,
+    "counters": {
+      "active_seconds": 35082.822968686,
+      "attempted_updates": 34205,
+      "estimated_flops": 499993002656248320,
+      "input_positions": 1103746624,
+      "microsteps": 68410,
+      "raw_bytes": 1829901882,
+      "scored_tokens": 397721472,
+      "skipped_updates": 0,
+      "successful_updates": 34205,
+      "wall_seconds": 36512.733601659536
+    },
+    "environment_scientific_fields_match": true,
+    "exact_metadata_cursor_replay": true,
+    "formula_flops_recomputed_from_shapes": 499993002656248320,
+    "frozen_backbone_configuration_matches": true,
+    "matches_frozen_preflight_walk": true,
+    "model_finite_fp32": true,
+    "next_complete_update_flops": 14868321140736,
+    "next_complete_update_shapes": [
+      [
+        16,
+        1024
+      ],
+      [
+        16,
+        1024
+      ]
+    ],
+    "optimizer_finite": true,
+    "standalone_vocabulary_archive_verified": 33554260,
+    "status": "PASS",
+    "stored_device_label_difference": {
+      "device": {
+        "checkpoint": "cuda:0",
+        "preflight": "cuda"
+      }
+    },
+    "stored_scheduler_rng_cursor_verified": true,
+    "unused_flops": 6997343751680
+  },
+  "lowrank64k": {
+    "boundary_proved": true,
+    "checkpoint": "results/vocab_scaling_64k/lowrank64k/run/last.pt",
+    "checkpoint_and_result_counters_agree": true,
+    "checkpoint_sha256": "b93f0c0f664471b7608bbd51a08c2d55b22ed0c070fc1bc81d86a1d1bc8ec4ac",
+    "checkpoint_wall_seconds": 42571.71473760158,
+    "counters": {
+      "active_seconds": 40863.951077533886,
+      "attempted_updates": 51243,
+      "estimated_flops": 499990666989799680,
+      "input_positions": 1653593040,
+      "microsteps": 102486,
+      "raw_bytes": 2740146733,
+      "scored_tokens": 595616423,
+      "skipped_updates": 0,
+      "successful_updates": 51243,
+      "wall_seconds": 42576.984066553414
+    },
+    "environment_scientific_fields_match": true,
+    "exact_metadata_cursor_replay": true,
+    "formula_flops_recomputed_from_shapes": 499990666989799680,
+    "frozen_backbone_configuration_matches": true,
+    "matches_frozen_preflight_walk": true,
+    "model_finite_fp32": true,
+    "next_complete_update_flops": 9932447416320,
+    "next_complete_update_shapes": [
+      [
+        16,
+        1024
+      ],
+      [
+        16,
+        1024
+      ]
+    ],
+    "optimizer_finite": true,
+    "standalone_vocabulary_archive_verified": 33553944,
+    "status": "PASS",
+    "stored_device_label_difference": {
+      "device": {
+        "checkpoint": "cuda:0",
+        "preflight": "cuda"
+      }
+    },
+    "stored_scheduler_rng_cursor_verified": true,
+    "unused_flops": 9333010200320
+  }
+}

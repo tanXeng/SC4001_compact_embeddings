@@ -1,0 +1,99 @@
+model:
+  layers: 10
+  hidden: 512
+  heads: 8
+  feedforward: 2048
+  context: 1024
+  dropout: 0.1
+training:
+  microbatch_size: 16
+  context: 1024
+  stride: 512
+  accumulation: 2
+  learning_rate: 0.0003
+  betas:
+  - 0.9
+  - 0.999
+  epsilon: 1.0e-08
+  weight_decay: 0.01
+  clip_norm: 1.0
+  schedule: constant
+  budget_policy: flops
+  budget_limit: 500000000000000000
+  seed: 42
+  fp16: false
+  validation_interval: 0
+  checkpoint_interval: 0
+  checkpoint_seconds: 300
+  flop_estimator: vocab_scaling_v1
+data:
+  root: data/vocab_scaling_64k
+  raw_root: data/vocab_scaling_large_5e17
+  tier: pilot
+evaluation:
+  protocol: fineweb_document_eos_c1024_s512_v2
+  context: 1024
+  stride: 512
+  eos_id: 0
+arms:
+  dense64k:
+    kind: dense
+    vocab_size: 65536
+  lowrank64k:
+    kind: low_rank
+    vocab_size: 65536
+  adaptive64k:
+    kind: adaptive
+    vocab_size: 65536
+    allocation_policy: three_band_factor4_middle_quarter_grid256_v1
+  hash64k:
+    kind: hash
+    vocab_size: 65536
+    k: 2
+    seeds:
+    - 17
+    - 29
+    importance_init: normal
+device: cuda
+output: results/vocab_scaling_64k
+evaluation_fractions:
+- 0.25
+- 0.5
+- 0.75
+- 1.0
+diagnostic_fractions:
+- 0.5
+- 1.0
+screen_documents: 256
+confirmation_documents: 256
+threads: 1
+profile_updates: 3
+profile_warmup: 2
+protocol:
+  study: 64k_extension_v1
+  phase: preparation_only
+  non_repeating: true
+  data_margin: 1.2
+  peak_target_gib: 24
+  hash_interference:
+    endpoint_only: true
+    documents: 2
+    targets: 512
+    shared_buckets: 8
+    tokens_per_bucket: 4
+    selection: lowest bucket IDs sharing at least two observed input token IDs in
+      fixed training prefixes; lowest token IDs
+    paths:
+    - input
+    - output
+    - combined
+reference:
+  commit: e579a46293a575153b22509abe588d21f44ffcea
+  protocol: artifacts/vocab_scaling_large/protocol.json
+  ceiling_bytes: 33555740
+  baseline: baseline16k
+  retrain: false
+tokenizer:
+  artifact: artifacts/vocab_scaling_64k/tokenizer.json
+  construction_prefix_documents: 65182
+  construction_prefix_bytes: 200000346

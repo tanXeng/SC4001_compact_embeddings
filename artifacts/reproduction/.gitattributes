@@ -1,0 +1,2 @@
+# Frozen reproduction artifacts retain their exact bytes.
+* -text whitespace=cr-at-eol

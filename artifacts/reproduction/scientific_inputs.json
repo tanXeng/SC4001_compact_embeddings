@@ -1,0 +1,122 @@
+{
+  "schema": "independent_reproduction_scientific_lock_v1",
+  "normalization": "Python/YAML line endings only; other frozen artifacts byte exact. Historical implementations unchanged.",
+  "files": {
+    "artifacts/vocab_scaling_64k/completed_evidence_server.json": {
+      "mode": "bytes",
+      "sha256": "d54ef2c8585ad6f4fcbc55a75a3d4d8a13717ce8a06f6528581018eeccd82038"
+    },
+    "artifacts/vocab_scaling_64k/experiment.json": {
+      "mode": "bytes",
+      "sha256": "be1e105c3ba4b0033a37a0483b8636233ffe18b0c294e12c9c78fe9c16bdef74"
+    },
+    "artifacts/vocab_scaling_64k/methodology.json": {
+      "mode": "bytes",
+      "sha256": "9972b5b5be9aaa89c797099d3b3fc8b2da80d405b7230acf10e87c443639cd1c"
+    },
+    "artifacts/vocab_scaling_64k/protocol.json": {
+      "mode": "bytes",
+      "sha256": "bd3cfe6b4407783cf8b910cfe0b873157877863d388026febcaed0af4edd1ae5"
+    },
+    "artifacts/vocab_scaling_64k/tokenizer.json": {
+      "mode": "bytes",
+      "sha256": "40bc0b3ec171f940922072a56379dfd5e1d7949158cbef3ec2f65410a1f4c0b4"
+    },
+    "artifacts/vocab_scaling_large/protocol.json": {
+      "mode": "bytes",
+      "sha256": "8fbcf4355a2bb6a23b0445bcc9cbb9b3a5cd9fd2075034bdbde3b75a52927aa8"
+    },
+    "artifacts/vocab_scaling_large/tokenizers/base.json": {
+      "mode": "bytes",
+      "sha256": "cf148983e4f5838d445c0eb0ccc6793997d03da9509910298b9094b29b1eb38c"
+    },
+    "artifacts/vocab_scaling_large/tokenizers/expanded.json": {
+      "mode": "bytes",
+      "sha256": "1192955ffd00b6723043a20d599defbe863ed1a48ea1612d9f47c1dbc1e2323b"
+    },
+    "artifacts/vocab_scaling_large/tokenizers/nested.json": {
+      "mode": "bytes",
+      "sha256": "c8a9dbbd0d78cd8ce5b6a1120acf3b4e170a907c2853238e335f6198f67bde5c"
+    },
+    "artifacts/vocab_scaling_large/tokenizers/protocol.json": {
+      "mode": "bytes",
+      "sha256": "455ca357ef2808f061f7b602b57478edc863aa26cb687afc575b1aaad3b5feea"
+    },
+    "configs/testing.yaml": {
+      "mode": "lf",
+      "sha256": "08c1bbe699f5a70261651225b2ecdca669c2d35fa21aaeecaf38c1c6b39b4fdc"
+    },
+    "configs/vocab_scaling_64k.yaml": {
+      "mode": "lf",
+      "sha256": "a74edde90faea60f39345672145b3d9395c8a91ed7af019c90e0ca8d7785d82a"
+    },
+    "configs/vocab_scaling_large.yaml": {
+      "mode": "lf",
+      "sha256": "3d6d6da8cd432812e8a22ecc8810f1ff0bf45d6d88cc6b3334b5c11aea4ff5cd"
+    },
+    "pyproject.toml": {
+      "mode": "bytes",
+      "sha256": "05e66ff1f1c76ed8b095605914642b10f50163da809231dc5821a2abdb5b6364"
+    },
+    "scripts/__init__.py": {
+      "mode": "lf",
+      "sha256": "429b5a9ce84e260804839f1d1dd4d2851d6d79077acfe6f319a98d193eb6fe58"
+    },
+    "scripts/vocab_scaling.py": {
+      "mode": "lf",
+      "sha256": "89add7a4fc874d6212900458839c2c73d4b12ea3c5cd55da1cb2897cd064deee"
+    },
+    "scripts/vocab_scaling_64k.py": {
+      "mode": "lf",
+      "sha256": "baa44c17898b92917e5bd9ec30ae99bf3c76ad777e7113bd93e3c07fcf09e11c"
+    },
+    "scripts/vocab_scaling_64k_diagnostics.py": {
+      "mode": "lf",
+      "sha256": "0f10ed414c13d2dda8f2f4510258b6991a8fe65be27051c5f822c44782e95858"
+    },
+    "vocab_lm/__init__.py": {
+      "mode": "lf",
+      "sha256": "f49d74cf0f90f5294c6b98531b9031fd3584034385cf9bc031cf872adebc8791"
+    },
+    "vocab_lm/accounting.py": {
+      "mode": "lf",
+      "sha256": "bcbd2e47679a7b2fa0325fef53cd81dd7aab278bfc2735896c01cf125970d2cd"
+    },
+    "vocab_lm/checkpoint.py": {
+      "mode": "lf",
+      "sha256": "13dc6257dd491cc34ace8033cca893fb0a0187d9dad8a5aff1c3c5b75366185c"
+    },
+    "vocab_lm/config.py": {
+      "mode": "lf",
+      "sha256": "3f7562bf8dd72b25f326af2f092c429c3de515609a0e03a1aabbd6de0cecfa6e"
+    },
+    "vocab_lm/data.py": {
+      "mode": "lf",
+      "sha256": "99079168be993a1b85a348045bbe49b7def527cb3028588933edf302d2f05edc"
+    },
+    "vocab_lm/evaluate.py": {
+      "mode": "lf",
+      "sha256": "c320bd9bbbdac5dbff6fc6d0f0a84f0a5f6358a8ad62ea38c6724559802881e1"
+    },
+    "vocab_lm/fineweb.py": {
+      "mode": "lf",
+      "sha256": "680454268f69687c9c1865aa8c86f28a0274966423df0cfdaf40bb45d0e19481"
+    },
+    "vocab_lm/model.py": {
+      "mode": "lf",
+      "sha256": "db5d4ff3bc5b2150daa3d2e7307e5deab6139fa4375dff79c266f78d319a7be9"
+    },
+    "vocab_lm/runtime.py": {
+      "mode": "lf",
+      "sha256": "b696adc3b2c0f37897f332b6a5fc0890aa0d7c2a5cceb6fd65550c28935dbe08"
+    },
+    "vocab_lm/tokenizer.py": {
+      "mode": "lf",
+      "sha256": "7acaf1c8ca7b8f277b6d568d1122e044366e3c4eb697469a647dd53f3899a7df"
+    },
+    "vocab_lm/train.py": {
+      "mode": "lf",
+      "sha256": "4bac07ec57d283834c13471bc942df12140bee2c1d9b17897509fb3414acb21a"
+    }
+  }
+}

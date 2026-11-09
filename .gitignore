@@ -3,7 +3,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .tmp/
-data/
+/data/
 results/
 checkpoints/
 *.egg-info/
@@ -11,3 +11,18 @@ build/
 dist/
 
 .local_history/
+
+# Scientific datasets/checkpoints and generated operational receipts stay local.
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.parquet
+*.zip
+*.log
+*.bundle
+analysis/data/*.tmp
+# Local-only integrity snapshot and superseded operational notes.
+/artifacts/vocab_scaling_64k/completed_evidence.json
+/artifacts/vocab_scaling_64k/README.txt
+/docs/VOCAB_SCALING.md

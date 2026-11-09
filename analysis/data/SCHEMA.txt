@@ -1,0 +1,42 @@
+Final scientific analysis data (historical 16K/32K and new 64K)
+
+run_summary.csv: one row per arm; final screening/confirmation BPB, accuracy,
+NLL, exposure, updates, time, storage, parameters and observed GPU allocator peaks.
+evaluation_history.csv: every original observation and its actual/nominal FLOP
+fraction. Filter scheduled_curve_point=True for the five-point screening curves;
+manual endpoint duplicates and once-only confirmations remain separately labeled.
+training_history.csv.gz: every original update, including update NLL/mean token
+NLL, exact FLOPs, byte/token/position counters, active/wall time and GPU memory.
+training_factor_gradients.csv.gz: every logged pre-clip vocabulary factor norm.
+These are deterministic lossless gzip copies of the final exported CSVs: no
+downsampling, rounding, smoothing or removal of scientific columns was performed.
+representation_diagnostics.json: original nested half-budget and endpoint records.
+Each record has cohort, arm, observation_role, source row, and values. Within values:
+singular_values/sample_ids/effective_norms/coordinate_variance describe 128 sampled
+effective rows; full_effective_singular_values is the full Low-rank spectrum;
+factor_norms/gradient_norms preserve training-time diagnostics; bands holds
+Adaptive capacity/rank/conditioning/gradients; hash holds occupancy, coefficient
+distributions, collisions and bounded actual-LM-loss interference for input,
+output and combined paths, including original bucket contributions/cosines.
+frequency_metrics.csv: original grouped NLL, accuracy, counts and mass; join on
+observation_id to evaluation_history. comparability_key identifies matching group
+definitions. Adaptive bands are not frequency thirds. No per-group BPB is invented.
+checkpoint_verification.json: exact final 64K counters, cursor/boundary and archive
+verification. It is final scientific verification, not a runtime launch receipt.
+
+All files stand alone: source path strings are provenance, not file dependencies.
+cohort/provenance distinguish historical frozen results from the extension.
+FLOPs/bytes/counters are exact integer literals; use integer-aware readers.
+BPB = total target NLL / (ln(2) * raw UTF-8 target bytes). Token NLL/accuracy are
+not directly comparable across different tokenizers. Rank estimates are sampled
+except the explicitly marked full Low-rank spectra. Adaptive training band mass
+and Hash frequency-weighted occupancy use complete prepared training counts,
+not only the prefix consumed by an arm. Group-specific byte counts were not logged.
+Wall time is the original runner counter, not calendar turnaround. GPU reserved
+peaks include allocator cache; they are distinct from allocated/live tensor peaks.
+
+Python readers:
+  import csv, gzip, json
+  with gzip.open('analysis/data/training_history.csv.gz','rt') as f:
+      for row in csv.DictReader(f): pass
+  records = json.load(open('analysis/data/representation_diagnostics.json'))
