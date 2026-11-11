@@ -35,6 +35,8 @@
 \newcommand{\dd}{\Delta}
 
 \begin{document}
+% Front matter reuses page 1; reserve hyperlink page anchors for the main text.
+\hypersetup{pageanchor=false}
 
 % =============================================================== COVER =======
 \begin{titlepage}
@@ -63,6 +65,7 @@ branch \texttt{research/vocab-scaling-fp32-isoflops}\par}
 \tableofcontents
 \clearpage
 \setcounter{page}{1}
+\hypersetup{pageanchor=true}
 
 % ============================================================ ABSTRACT =======
 \begin{center}
@@ -127,8 +130,8 @@ alone fixed, a dense arm could keep more parameters. We therefore study:
 vocabulary archive, together with iso-FLOP training of complete optimiser updates. Evaluation uses
 tokenizer-independent \bpb{} and a once-only, document-disjoint confirmation split. (ii) Adaptations of
 low-rank, adaptive and hash embeddings to an \emph{exactly tied, full-softmax} causal LM over BPE subwords.
-(iii) The finding that the best compact arm (Adaptive 64K) beats every dense arm at a quarter of the
-storage. We give an analysis showing that \emph{factorised} tied embeddings (Low-rank and Adaptive, which
+(iii) The finding that the best compact arm (Adaptive 64K) beats every dense arm, using approximately the same
+storage as Dense 16K, half that of Dense 32K and a quarter that of Dense 64K. We give an analysis showing that \emph{factorised} tied embeddings (Low-rank and Adaptive, which
 store a small table times a projection instead of the full $V\times d$ table) cap the softmax cost at twice
 the vocabulary parameter count, which turns saved bytes into extra optimiser updates. (iv) Frequency-group and
 representation diagnostics (spectra, band conditioning, hash occupancy and gradient interference) that
@@ -317,8 +320,8 @@ C_{\text{out}} = \underbrace{2Vd}_{\text{dense, hash}},\qquad
 \label{eq:cout}
 \end{equation}
 For both factorised representations, $C_{\text{out}}$ equals exactly \emph{twice the vocabulary
-parameter count}, so a storage cap is also a cap on softmax compute. Hash embeddings share parameters but
-not computation: their materialised table still costs $2Vd$. For $V{=}65{,}536$, $d{=}512$,
+parameter count}, so a storage cap is also a cap on softmax compute. Our implemented Hash output path
+materialises the table and therefore still costs $2Vd$ for the output projection. For $V{=}65{,}536$, $d{=}512$,
 Eq.~\eqref{eq:cout} gives 67.1M FLOPs per token for dense or hash, against 16.8M for low-rank and 16.1M for
 adaptive. The backbone costs $\approx$84M FLOPs per token (63M in its weight matrices and 21M in
 full-square attention). The measured cost per update (Table~\ref{tab:main}) is
@@ -355,8 +358,7 @@ so the factor $\ln 2$ converts the total to bits. Every document is scored with 
 and stride 512. Each target, including EOS, is scored exactly
 once. We use two document-disjoint validation subsets of 256 documents each. \emph{Screening} (750\,KB)
 was evaluated at 0, 25, 50, 75 and 100\% of the budget for learning curves. \emph{Confirmation} (677\,KB)
-was evaluated \emph{once} per arm, at the end of training. It plays the role of a held-out test
-set that played no part in any decision. For diagnosis, we split token types into equal-count
+was evaluated \emph{once} per arm, at the end of training. For diagnosis, we split token types into equal-count
 \emph{thirds} by training frequency rank (or by band, for Adaptive) and report the NLL for each group. At
 50\% and 100\% of the budget we also record spectra of the effective embeddings, band conditioning, hash
 occupancy and collisions, and a bounded gradient-interference probe for shared hash components.
@@ -456,9 +458,9 @@ compute. At 25\% of the budget, Low-rank 64K and Adaptive 64K lead Dense 64K by 
 \bpb{}, and the factorised 32K arms lead Dense 32K by about 0.02. By the end, both dense controls have
 overtaken their low-rank counterparts. The crossover falls between 75\% and 100\% (at 75\%,
 Low-rank 64K still leads, 1.2862 vs.\ 1.2884). Adaptive 64K is the only arm that stays ahead of its dense
-control throughout. The training \bpb{} over the final 2,000 updates gives the same ranking as the held-out
-splits (Adaptive 64K 1.312, Dense 32K 1.315, Low-rank 32K 1.315, Dense 64K 1.319, Low-rank 64K 1.319,
-Adaptive 32K 1.320, baseline 1.333, Hash 1.428). Every arm sees each document at most once, so there is no
+control throughout. The training \bpb{} over the final 2,000 updates is
+Adaptive 64K 1.312, Dense 32K 1.315, Low-rank 32K 1.315, Dense 64K 1.319, Low-rank 64K 1.319,
+Adaptive 32K 1.320, baseline 1.333, Hash 1.428. Every arm sees each document at most once, so there is no
 sign of differential overfitting.
 
 Figure~\ref{fig:curves}c separates \emph{sample} efficiency from \emph{compute} efficiency. At equal
@@ -513,12 +515,12 @@ mass and reaches an NLL of 3.60. The middle and tail bands, with 128 and 32 dime
 7.86. Frequency-aware allocation therefore protects exactly the tokens that dominate \bpb.
 
 \subsection{Representation diagnostics}
-\textbf{Low-rank is limited by its rank, not by training.} All 127 (64K) and 252 (32K) effective singular values are well
+\textbf{Low-rank uses all available rank directions.} All 127 (64K) and 252 (32K) effective singular values are well
 away from zero (Fig.~\ref{fig:freq}b). The ratio of the largest to the smallest singular value,
 $\sigma_1/\sigma_r$, is 11.6 (64K) and 21.1 (32K), and $B$ is well conditioned (condition number
 $\kappa\approx2.8$--$3.0$). From half to full budget, the smallest singular value grew from
-11.4 to 16.7 (64K) and from 2.9 to 6.9 (32K). Training is therefore not what holds Low-rank back: the model keeps
-strengthening all $r$ directions, so its limit is the rank itself. A larger $r$ would likely help, but the
+11.4 to 16.7 (64K) and from 2.9 to 6.9 (32K). These measurements show use of all $r$ directions, but do not
+establish convergence or exclude training limitations. A larger $r$ might help, but this is untested and the
 storage cap does not allow it. The entropy effective rank \citep{roy2007effrank} of 128
 sampled rows falls from 110 (Dense 64K) to 91 (Low-rank 64K).
 
@@ -530,15 +532,13 @@ over-parameterisation. Its 1.05\,MB could instead be spent on a larger head.
 \textbf{Hash collisions are structural, not rare.} Every token is built from $k=2$ of the $B=15{,}615$
 shared components. Almost every component is in use (15,610), and each is shared by about 8.4 tokens on
 average and up to 21 (Fig.~\ref{fig:freq}c). In total, 550,095 token pairs share at least one component, and
-21 pairs share both, so only their two weights tell them apart. The model tries to separate tokens that
-share a component by giving them weights of opposite sign: half of all weights are negative (std 0.53).
-With only two weights per token, however, this leaves little room. The sharing is also very uneven. The
+21 pairs share both, so only their two weights tell them apart. Half of all weights are negative (std 0.53).
+The sharing is also very uneven. The
 busiest component receives 29.2M training occurrences against a median of 30K, because it holds a very
-frequent token. An interference probe on 8 shared components (787 targets) shows the result: on the output
-path, a single token supplies on average 77\% of the gradient a shared component receives, and different
-tokens push it in unrelated directions (mean cosine $-0.016$). Each shared component is therefore
-effectively owned by its most frequent token, and the rarer tokens that share it must use a vector shaped
-for another word.
+frequent token. An interference probe on 8 shared components (787 targets) finds that, on the output
+path, the largest selected token contribution accounts on average for 77\% of the sum of selected contribution
+norms, and selected tokens push in unrelated directions (mean cosine $-0.016$). This bounded probe does not
+measure dominance over the complete component gradient or establish that the dominant token is the most frequent.
 
 \subsection{Practical costs}
 Compact embeddings shrink \emph{stored} bytes, but they do not reduce training memory. All 64K arms peak at
@@ -553,24 +553,24 @@ permutation in our plain PyTorch implementation. The FLOP convention does not co
 \textbf{Why Adaptive wins at 64K but trails Low-rank at 32K.} Low-rank spreads the same rank over all
 tokens. At $r=252$ (32K) that rank is generous, and its uniform capacity beats Adaptive, whose 12,032
 tail types get only 32 dimensions and whose head projection wastes storage. At $r=127$ (64K), the shared
-rank becomes a bottleneck even for frequent tokens. With weight tying it also caps the rank of the logit
+rank may become a bottleneck even for frequent tokens. With weight tying it also caps the rank of the logit
 matrix, the softmax bottleneck of \citet{yang2018softmax}. Adaptive instead keeps full 512-dimensional,
 full-rank rows for the 8,448 most frequent types, which carry 86\% of the predicted mass. It compresses only the
 long tail, where Zipf's law says little \bpb{} is at stake. The stronger the compression, the more a
 frequency-aware allocation pays off.
 
-\textbf{Why Hash fails here.} Three factors combine. (1) \emph{No compute saving.} The tied output must
-score all $V$ effective rows, so Hash pays the full $2Vd$ softmax and loses a third of its updates
+\textbf{Why Hash fails here.} Three factors combine. (1) \emph{No compute saving in our implementation.} Our implemented Hash output path
+materialises all $V$ effective rows, so Hash pays the full $2Vd$ output projection and loses a third of its updates
 (Sec.~\ref{sec:flops}). (2) \emph{Output-side collisions.} On the input side, a shared component is a
 shared feature. On the output side, every token's logit is a weighted sum of just two of 15,615 shared
 vectors, so the logits of bucket-mates are coupled. The softmax must tell these tokens apart,
 a requirement that the original classification setting \citep{svenstrup2017hash} never imposed. (3)
-\emph{Frequency-blind sharing.} Rare tokens share components with frequent ones that dominate the gradient
-(77\% dominance), and their rows are fitted mostly to the frequent token's needs. This matches the
+\emph{Frequency-blind sharing.} Rare tokens share components with frequent ones. The bounded probe finds
+77\% dominance among selected output-path contribution norms, suggesting uneven influence among bucket-mates. This is consistent with the
 $+3.5$-nat rare-third penalty and is a sharper form of the rare-token degeneration in tied models
 \citep{gao2019degeneration}. The Dense 64K control has an identical update count, so the 0.105 \bpb{}
 gap is due to the representation alone; we attribute it to (2) and (3). This attribution is a proposed
-mechanism, not an ablation: the interference probe finds similar gradient dominance on the input (75\%)
+mechanism, not an ablation: the interference probe finds similar dominance among selected contribution norms on the input (75\%)
 and output (77\%) paths, and we did not run an input-only hash variant to separate them. Hashing is a poor fit for a tied subword softmax unless it is made
 frequency-aware, for example by hashing only the tail.
 
@@ -590,8 +590,8 @@ shows that the dense controls catch up as compute grows, so conclusions may also
 \emph{Constant learning rate} with no decay, so the endpoints are not annealed. (5) \emph{The FLOP
 convention} is analytic and excludes the loss softmax and indexing. It is not a measure of hardware time. (6)
 \emph{Untuned compact configurations} (no $k$ or band-width search, by design, to avoid outcome-driven
-choices), and Hash was tested only at 64K. (7) The 64K arms ran later than the 16K/32K arms, under the same
-frozen protocol and code. Frequency diagnostics use full training counts rather than the prefix each arm
+choices), and Hash was tested only at 64K. (7) The 64K experiment was a follow-up motivated by the completed
+16K/32K study, separately frozen before its runs while reusing the core recipe; the combined study was not one prospectively frozen sweep. Frequency diagnostics use full training counts rather than the prefix each arm
 consumed.
 
 \textbf{Future work.} Repeat with several seeds and an IsoFLOP sweep over budgets to locate the
@@ -628,7 +628,10 @@ hashes, and rebuilds the exact document selection and token shards.
 \texttt{analysis/data/} files by \texttt{report/make\_figures.py}.
 
 \textbf{Existing code, data and models.} No pretrained models or weights were used: every arm was
-trained from scratch from a seeded random initialisation ($\mathcal{N}(0,0.02^2)$). The models,
+trained from scratch from a seeded random initialisation. Dense vocabulary, positional and backbone linear weights,
+Low-rank/Adaptive tables and Hash components use $\mathcal{N}(0,0.02^2)$; Low-rank/Adaptive projections use
+standard deviations $r^{-1/2}$/$d_j^{-1/2}$, and Hash coefficients use $k^{-1/2}$. Linear biases are zero;
+LayerNorm weights and biases are one and zero, respectively. The models,
 vocabulary representations, training loop and evaluation are built on PyTorch
 \citep{paszke2019pytorch}. BPE tokenisers are fitted with the Hugging Face \texttt{tokenizers} library,
 data are read with \texttt{pyarrow}, configurations with \texttt{PyYAML}, and figures are drawn with
