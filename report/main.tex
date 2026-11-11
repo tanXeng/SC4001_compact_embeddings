@@ -110,6 +110,24 @@ model is vocabulary. Its output layer costs 67M FLOPs per token, about 80\% of t
 \citep{tao2024vocab} finds that the compute-optimal vocabulary grows with model size. This suggests that
 small models cannot afford large vocabularies.
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.75\linewidth]{figures/fig_dense_parameters.pdf}
+\caption{Parameter composition of our frozen model configuration with dense vocabularies. The common
+backbone has 32,033,792 parameters; the tied input/output vocabulary matrix is counted once ($V\times512$).
+Percentages show the vocabulary matrix's share of total parameters.}
+\label{fig:dense_parameters}
+\end{figure}
+
+The compression methods considered here emerged in 2017--2020 from word/$n$-gram classification
+(Hash \citep{svenstrup2017hash}), word-level recurrent language modeling (adaptive softmax
+\citep{grave2017adaptivesoftmax}), and subword Transformer encoders (ALBERT \citep{lan2020albert}).
+Adaptive input representations already evaluated decoder-only Transformers with tied word-level adaptive
+representations and tied BPE baselines \citep{baevski2019adaptive}. This motivates testing our tied subword
+full-softmax adaptations on a 32M-parameter backbone across 16K/32K/64K vocabularies under joint fixed
+serialised vocabulary-storage and estimated training-FLOP budgets, rather than assuming that the original
+results transfer to this regime, where vocabulary parameters can constitute a substantial fraction of the model.
+
 \emph{Compact embeddings} (low-rank factorisation \citep{lan2020albert}, hash embeddings
 \citep{svenstrup2017hash} and adaptive, frequency-banded representations \citep{baevski2019adaptive}) all
 cut the parameter cost of the vocabulary. They are usually judged on memory saved for a fixed

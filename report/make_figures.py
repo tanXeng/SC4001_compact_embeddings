@@ -54,6 +54,32 @@ def style(arm, runs):
     return dict(color=COLOR[rep], ls=ls, marker=mk, label=LABEL[arm])
 
 
+def fig_dense_parameters(runs, out):
+    """Dense tied model composition from the frozen accounting records."""
+    dense = runs.loc[["baseline16k", "dense32k", "dense64k"]]
+    backbone = dense.backbone_parameters.to_numpy(dtype=np.int64)
+    vocabulary = dense.vocabulary_parameters.to_numpy(dtype=np.int64)
+    assert np.all(backbone == backbone[0])
+    assert np.all(vocabulary == dense.vocab_size.to_numpy(dtype=np.int64) * 512)
+    assert np.all(backbone + vocabulary == dense.total_parameters.to_numpy(dtype=np.int64))
+    x = np.arange(len(dense))
+    fig, ax = plt.subplots(figsize=(5.6, 2.5))
+    ax.bar(x, backbone / 1e6, width=.55, color="#4d4d4d", label="Transformer backbone")
+    ax.bar(x, vocabulary / 1e6, bottom=backbone / 1e6, width=.55,
+           color="#1f77b4", label="Dense tied input/output vocabulary matrix")
+    for i, (body, vocab) in enumerate(zip(backbone, vocabulary)):
+        ax.text(i, (body + vocab / 2) / 1e6, f"{100 * vocab / (body + vocab):.1f}%",
+                ha="center", va="center", color="white")
+    ax.set(xticks=x, xticklabels=["16K", "32K", "64K"], xlabel="Vocabulary size",
+           ylabel="Parameters (millions)", ylim=(0, 72))
+    ax.set_axisbelow(True)
+    ax.grid(axis="x", visible=False)
+    ax.legend(frameon=False, ncol=2, loc="lower left", bbox_to_anchor=(0, 1.01), fontsize=7)
+    fig.tight_layout()
+    fig.savefig(out / "fig_dense_parameters.pdf")
+    plt.close(fig)
+
+
 def fig_curves(runs, evals, train, out):
     """(a) training BPB (smoothed), (b) held-out screening BPB vs compute, (c) vs training text."""
     fig, axes = plt.subplots(1, 3, figsize=(7.2, 2.5))
@@ -198,6 +224,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     args.out.mkdir(exist_ok=True)
     runs, evals, freq, diag, train = load(args.data)
+    fig_dense_parameters(runs, args.out)
     fig_curves(runs, evals, train, args.out)
     fig_tradeoff(runs, args.out)
     fig_frequency_and_diagnostics(runs, freq, diag, args.out)
