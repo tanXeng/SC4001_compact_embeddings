@@ -256,14 +256,24 @@ side; tying them to the output is, to our knowledge, untested.
   % ---------------- (d) Hash
   \begin{scope}[xshift=13.55cm]
   \node[anchor=west,font=\footnotesize\bfseries] at (0,3.45) {(d) Hash ($k{=}2$)};
-  \node[draw,rounded corners=2pt,fill=white] (w) at (0.25,1.5) {$w$};
-  \draw[fill=red!12] (1.3,0) rectangle (3.8,3.0);
-  \draw[fill=red!45] (1.3,2.2) rectangle (3.8,2.4);
-  \draw[fill=red!45] (1.3,0.7) rectangle (3.8,0.9);
-  \node[below] at (2.55,0) {pool $C$: $B\times d$};
-  \draw[->] (w) -- node[above left,font=\scriptsize,inner sep=1pt] {$h_1$} (1.25,2.3);
-  \draw[->] (w) -- node[below left,font=\scriptsize,inner sep=1pt] {$h_2$} (1.25,0.8);
-  \node[font=\scriptsize] at (2.55,1.55) {$e_w{=}p_{w,1}c_{h_1(w)}{+}p_{w,2}c_{h_2(w)}$};
+  % per-token weights P (V x k), row w highlighted
+  \draw[fill=orange!12] (0,0) rectangle (0.4,3.0);
+  \draw[fill=orange!50] (0,1.45) rectangle (0.4,1.65);
+  \node at (0.2,0.7) {$P$};
+  \node[below] at (0.2,0) {$V\times k$};
+  % shared pool C (B x d), the two rows selected by h_1(w), h_2(w)
+  \draw[fill=red!12] (1.1,0) rectangle (3.1,3.0);
+  \draw[fill=red!45] (1.1,2.2) rectangle (3.1,2.4);
+  \draw[fill=red!45] (1.1,0.7) rectangle (3.1,0.9);
+  \node at (2.1,1.55) {$C$};
+  \node[below] at (2.1,0) {$B\times d$};
+  \draw[->] (0.45,1.55) -- node[pos=0.7,above left,font=\scriptsize,inner sep=1pt] {$h_1$} (1.05,2.3);
+  \draw[->] (0.45,1.55) -- node[pos=0.7,below left,font=\scriptsize,inner sep=1pt] {$h_2$} (1.05,0.8);
+  % weighted sum -> e_w
+  \node[draw,circle,inner sep=0.5pt,font=\scriptsize] (sum) at (3.95,1.55) {$+$};
+  \draw[->] (3.2,2.3) -- node[above right,font=\scriptsize,inner sep=1pt] {$\times p_{w,1}$} (sum);
+  \draw[->] (3.2,0.8) -- node[below right,font=\scriptsize,inner sep=1pt] {$\times p_{w,2}$} (sum);
+  \draw[->] (sum) -- (4.5,1.55) node[right] {$e_w$};
   \node[anchor=west,align=left,font=\scriptsize] at (0,-0.85) {params $Bd + kV$\\softmax $2Vd$ (materialised)};
   \end{scope}
 \end{tikzpicture}}
