@@ -23,3 +23,27 @@ once-only confirmation and diagnostic/report commands. GPU preflight and explici
 local authorization are required before training. No private historical receipt
 is needed. New runs live under `results/reproductions/`; committed CSV/JSON data
 are the frozen outputs of our completed runs and are never overwritten.
+
+## Build the LaTeX report
+
+The entry point is `report/main.tex`. Use XeLaTeX (required by `fontspec`),
+BibTeX (`natbib` with `unsrtnat`), and `latexmk` with Perl. On Windows, install
+basic MiKTeX and native Strawberry Perl, and let MiKTeX's package manager supply
+missing packages. Ensure MiKTeX and Perl are on `PATH`, then reopen your
+terminal/editor after installation. Use native Perl rather than Git's MSYS Perl,
+which can convert Windows paths incorrectly.
+Arial is used when available; otherwise the source requires Liberation Sans.
+
+From the repository root in PowerShell:
+
+```powershell
+latexmk -cd -xelatex -interaction=nonstopmode -halt-on-error -file-line-error -outdir=build report/main.tex
+```
+
+The PDF is `report/build/main.pdf`; `latexmk` runs BibTeX and repeats XeLaTeX
+until references settle. `build/` is ignored. For a full rebuild, add `-gg`
+(removes generated outputs in that build directory before compiling).
+The tracked `report/main.pdf` and `report/figures/*.pdf` are preserved.
+The committed figures suffice for compilation; no Python, datasets, or GPU are
+needed. Optional figure regeneration uses `report/make_figures.py` and the
+committed `analysis/data/` inputs (see the script for Python dependencies).

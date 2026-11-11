@@ -194,7 +194,7 @@ embeddings \citep{hrinchuk2020tensorized} compress the table further, at the cos
 decoding. Rare-token embeddings are known to degenerate in tied generative models \citep{gao2019degeneration},
 so compression may hurt the tail most. Previous studies compare these methods (i) at a \emph{fixed
 vocabulary}, (ii) on parameter counts rather than actual bytes, (iii) mostly on input-side or word-level
-tasks, and (iv) rarely with matched training compute. None asks whether compact storage lets a small
+tasks, and (iv) rarely with matched training compute. To our knowledge, prior work has not examined whether compact storage lets a small
 subword LM afford a larger vocabulary under both budgets. That is the question we address.
 
 % ============================================================ METHODS ========

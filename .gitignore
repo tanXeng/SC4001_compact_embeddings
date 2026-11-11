@@ -26,3 +26,14 @@ analysis/data/*.tmp
 /artifacts/vocab_scaling_64k/completed_evidence.json
 /artifacts/vocab_scaling_64k/README.txt
 /docs/VOCAB_SCALING.md
+
+# LaTeX intermediates; report/main.pdf and source figure PDFs remain tracked.
+/report/*.aux
+/report/*.bbl
+/report/*.blg
+/report/*.fdb_latexmk
+/report/*.fls
+/report/*.out
+/report/*.toc
+/report/*.xdv
+/report/*.synctex.gz
