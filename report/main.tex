@@ -73,9 +73,9 @@ branch \texttt{research/vocab-scaling-fp32-isoflops}\par}
 \end{center}
 \vspace{-4pt}
 \noindent
-Larger subword vocabularies compress text into fewer tokens, but in a small language model the
-$V\times d$ embedding table, and the tied output softmax that reuses it, grow linearly with the vocabulary
-size $V$. We ask whether \emph{compact} embedding representations let a model use a larger vocabulary
+Larger subword vocabularies compress text into fewer tokens, but in a small language model the $V\times d$
+matrix shared by the input embeddings and output projection grows linearly with vocabulary size $V$.
+We ask whether \emph{compact} embedding representations let a model use a larger vocabulary
 without paying for it, when both the vocabulary's storage and the training compute are held fixed. We
 train a pre-LayerNorm Transformer with 32M non-embedding parameters on FineWeb with nested byte-level BPE vocabularies of
 16K, 32K and 64K types. Every arm receives exactly $5\times10^{17}$ estimated training FLOPs, and every
@@ -88,8 +88,8 @@ best confirmation \bpb{} of all eight arms (1.2689 vs.\ 1.2880 for the 16K basel
 the dense 64K control that uses $4\times$ the storage. Low-rank 32K recovers 94\% of the dense 32K
 gain at half its storage. Hash 64K is clearly worse than the baseline (1.3789). We show analytically and
 empirically that factorised tied embeddings also shrink the output-softmax cost, which converts saved
-bytes into roughly 50\% more optimiser updates than dense 64K. Hash collisions fall hardest on rare
-tokens, which lose up to 3.5 nats relative to dense 64K. These results come from a single seed
+bytes into roughly 50\% more optimiser updates than dense 64K. Hash 64K degrades most severely on rare tokens,
+whose NLL increases by up to 3.5 nats relative to dense 64K. These results come from a single seed
 and a single budget; we report them as such.
 
 % ======================================================== INTRODUCTION =======
