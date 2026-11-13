@@ -221,7 +221,8 @@ hierarchical adaptive softmax, the output computes all band logits $(hB_j^{\top}
 concatenates them into one exact full softmax. The input and output are therefore exactly tied, and the
 loss is directly comparable with the other arms.
 
-\textbf{Hash} \citep{svenstrup2017hash}: a shared pool $C\in\mathbb{R}^{M\times d}$ and $k=2$
+\textbf{Hash} \footnote{Hash was not included in the 32K study after weak preliminary results. After completing that study, we realized we had available compute and time, so out of curiosity we decided to include Hash in the 64K follow-up.}
+\citep{svenstrup2017hash}: a shared pool $C\in\mathbb{R}^{M\times d}$ and $k=2$
 deterministic hash functions $h_i(w)=\mathrm{SHA256}(\text{seed}_i, w) \bmod M$ (seeds 17, 29). Each token
 has learned importance weights $p_w\in\mathbb{R}^{2}$, initialised $\mathcal{N}(0,1/k)$, and
 $e_w = \sum_{i=1}^{2} p_{w,i}\, c_{h_i(w)}$. \emph{Adaptations:} because the BPE vocabulary is a
