@@ -568,35 +568,35 @@ permutation in our plain PyTorch implementation. The FLOP convention does not co
 \section{Discussion}
 \label{sec:discussion}
 
-\textbf{Why Adaptive wins at 64K but trails Low-rank at 32K.} Low-rank spreads the same rank over all
-tokens. At $r=252$ (32K) that rank is generous, and its uniform capacity beats Adaptive, whose 12,032
-tail types get only 32 dimensions and whose head projection wastes storage. At $r=127$ (64K), the shared
-rank may become a bottleneck even for frequent tokens. With weight tying it also caps the rank of the logit
-matrix, the softmax bottleneck of \citet{yang2018softmax}. Adaptive instead keeps full 512-dimensional,
-full-rank rows for the 8,448 most frequent types, which carry 86\% of the predicted mass. It compresses only the
-long tail, where Zipf's law says little \bpb{} is at stake. The stronger the compression, the more a
-frequency-aware allocation pays off.
+\textbf{Why Adaptive may fare better relative to Low-rank at more severe compression regimes.} At 32K, Low-rank beats Adaptive by only 0.0040 confirmation \bpb{}, and it could be
+a small single-seed difference that may not represent a reliable advantage. The storage-matched Low-rank representation is also relatively 
+less constrained at 32K, with $r=252$, so there may be little benefit from allocating capacity by frequency at this compression level. 
+At 64K, the observed gap reverses and is larger: Adaptive beats Low-rank by 0.0093 \bpb{} on confirmation, with the same ordering on the 
+screening split. One plausible explanation is how the two methods allocate increasingly limited capacity. Low-rank applies the same global 
+rank constraint to every token, falling from $r=252$ at 32K to $r=127$ at 64K; with weight tying, this also constrains the rank of the output 
+logit matrix. Adaptive instead preserves full 512-dimensional representations for its 8,448 most frequent types while compressing progressively 
+rarer tokens to 128 and 32 dimensions. Since the head accounts for 86\% of confirmation targets, allocating capacity to these frequent tokens 
+has a greater effect on aggregate \bpb{} than allocating the same capacity to rare tokens. This is consistent with frequency-aware allocation 
+becoming more useful under the more severe 64K compression regime, but additional seeds and allocation ablations would be needed to establish whether the
+32K difference is reliable and whether this mechanism explains the 64K advantage.
 
-\textbf{Why Hash fails here.} Three factors combine. (1) \emph{No compute saving in our implementation.} Our implemented Hash output path
-materialises all $V$ effective rows, so Hash pays the full $2Vd$ output projection and loses a third of its updates
-(Sec.~\ref{sec:flops}). (2) \emph{Output-side collisions.} On the input side, a shared component is a
-shared feature. On the output side, every token's logit is a weighted sum of just two of 15,615 shared
-vectors, so the logits of bucket-mates are coupled. The softmax must tell these tokens apart,
-a requirement that the original classification setting \citep{svenstrup2017hash} never imposed. (3)
-\emph{Frequency-blind sharing.} Rare tokens share components with frequent ones. The bounded probe finds
+\textbf{Why Hash perfomrs poorly.} Three factors combine. (1) \emph{No compute saving in our implementation.} Our implemented Hash output path
+materialises all $V$ effective rows, so Hash pays the full $2Vd$ output projection and loses a third of its updates compared to Low-rank and Adaptive.
+(Sec.~\ref{sec:flops}). (2) \emph{Output-side collisions.} On the input side, a shared component is a shared feature. On the output side, every token's 
+logit is a weighted sum of just two of 15,615 shared vectors, so the logits of bucket-mates are coupled. The full softmax must therefore assign distinct 
+output probabilities to tokens whose logits depend on shared components, a constraint absent from the original input-side classification setting 
+\citep{svenstrup2017hash}. (3) \emph{Frequency-blind sharing.} Rare tokens share components with frequent ones. The bounded probe finds
 77\% dominance among selected output-path contribution norms, suggesting uneven influence among bucket-mates. This is consistent with the
-$+3.5$-nat rare-third penalty and is a sharper form of the rare-token degeneration in tied models
-\citep{gao2019degeneration}. The Dense 64K control has an identical update count, so the 0.105 \bpb{}
-gap is due to the representation alone; we attribute it to (2) and (3). This attribution is a proposed
-mechanism, not an ablation: the interference probe finds similar dominance among selected contribution norms on the input (75\%)
-and output (77\%) paths, and we did not run an input-only hash variant to separate them. Hashing is a poor fit for a tied subword softmax unless it is made
-frequency-aware, for example by hashing only the tail.
+$+3.5$-nat rare-third penalty and with prior work showing that rare-token representations can be particularly problematic in tied generative models \citep{gao2019degeneration}. 
+The Dense 64K control has an almost identical update count and training exposure, so the 0.105 \bpb{} gap isolates the effect of the implemented Hash representation. Output-side 
+coupling and frequency-blind sharing are plausible explanations for this gap, but our experiment does not isolate their individual causal effects. The interference probe finds 
+similar dominance among selected contribution norms on the input (75\%) and output (77\%) paths, and we did not run an input-only Hash variant to separate them.
 
-\textbf{Implications.} For LMs of this scale, the choice of vocabulary size and the choice of vocabulary
-representation are coupled. The ``optimal vocabulary'' observed for dense embeddings partly reflects the
-dense softmax cost. A compact, frequency-aware tied representation moved our optimum from 32K to 64K with
-no extra storage or compute. Practitioners should account for (i) the softmax FLOPs and (ii) wall-clock
-efficiency, which the FLOP convention misses (Adaptive took about 2.6$\times$ longer in our implementation).
+\textbf{Implications.} For LMs of this scale, the choice of vocabulary size and the choice of vocabulary representation are coupled. The ``optimal vocabulary'' 
+observed for dense embeddings partly reflects the dense output-projection cost. Under our fixed storage and analytical FLOP budgets, a compact, frequency-aware 
+tied representation moved the best observed vocabulary from 32K to 64K. This improvement is not free in practice: Adaptive required substantially more wall-clock 
+training time, taking about $2.6\times$ longer than the dense controls in our implementation. Practitioners should therefore consider both analytical FLOPs and 
+actual hardware efficiency when choosing a vocabulary representation.
 
 \textbf{Limitations.}
 (1) \emph{One seed and no confidence intervals.} The gaps between the top four arms (0.001--0.006 \bpb) may be
@@ -662,8 +662,8 @@ cap, the dual-budget protocol, and the analysis are our contribution.
 % ===================================================== AI STATEMENT ==========
 \section*{AI Use Statement}
 \addcontentsline{toc}{section}{AI Use Statement}
-used Claude for syntax help on selected code segments, minor debugging, document
-formatting only. All critical thinking, architectural design, integration,
+Used Claude and Codex for syntax help on selected code segments, minor debugging, boiler plate code and latex
+formatting only. All critical thinking, architectural and experimental design, integration,
 and analysis were performed independently by us, and all AI-generated segments were thoroughly
 reviewed and tested to ensure it accurately reflects my intended outcomes.
 
