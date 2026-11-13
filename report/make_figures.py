@@ -82,7 +82,7 @@ def fig_dense_parameters(runs, out):
 
 def fig_curves(runs, evals, train, out):
     """(a) training BPB (smoothed), (b) held-out screening BPB vs compute, (c) vs training text."""
-    fig, axes = plt.subplots(1, 3, figsize=(7.2, 2.5))
+    fig, axes = plt.subplots(1, 3, figsize=(7.2, 3.1))
     window = 1500  # updates; a ratio of sums is the exact BPB over the window
     for arm in ORDER:
         st = style(arm, runs)
@@ -97,12 +97,19 @@ def fig_curves(runs, evals, train, out):
         # Same held-out points, re-indexed by the amount of training text consumed (sample efficiency).
         axes[2].plot(e.training_raw_bytes.astype(float) / 1e9, e.bpb, color=st["color"], ls=st["ls"],
                      marker=st["marker"], ms=3.5)
+    # Zoom the y-axes on the non-hash arms so their curves separate; Hash 64K's first held-out point
+    # (1.576 BPB at 25% of the budget) falls above the range and is labelled instead.
+    top = 1.46
     axes[0].set(xlabel=r"Training compute (×10$^{17}$ FLOPs)", ylabel="Training BPB (1500-update window)",
-                xlim=(1.0, 5.05), ylim=(1.29, 1.52), title="(a) Training BPB vs. compute")
+                xlim=(1.0, 5.05), ylim=(1.30, top), title="(a) Training BPB vs. compute")
     axes[1].set(xlabel=r"Training compute (×10$^{17}$ FLOPs)", ylabel="Screening BPB (held-out)",
-                ylim=(1.24, 1.60), title="(b) Held-out BPB vs. compute")
+                ylim=(1.245, top), title="(b) Held-out BPB vs. compute")
     axes[2].set(xlabel="Training text consumed (GB)", ylabel="Screening BPB (held-out)",
-                ylim=(1.24, 1.60), title="(c) Held-out BPB vs. training text")
+                ylim=(1.245, top), title="(c) Held-out BPB vs. training text")
+    h = evals[(evals.arm == "hash64k") & evals.scheduled_curve_point & (evals.compute_fraction > 0)].iloc[0]
+    note = f"Hash 64K\n(25% point {h.bpb:.3f},\nabove axis)"
+    for ax, xy in ((axes[1], (2.55, 1.382)), (axes[2], (1.55, 1.448))):  # empty regions beside the red line
+        ax.text(*xy, note, color=COLOR["hash"], fontsize=6.3, ha="left", va="top", linespacing=1.15)
     handles, labels = axes[1].get_legend_handles_labels()
     fig.legend(handles, labels, ncol=8, frameon=False, loc="lower center", bbox_to_anchor=(.5, -.07),
                handlelength=2.6, columnspacing=.9, fontsize=6.3)

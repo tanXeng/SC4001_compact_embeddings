@@ -73,42 +73,39 @@ branch \texttt{research/vocab-scaling-fp32-isoflops}\par}
 \end{center}
 \vspace{-4pt}
 \noindent
-Larger subword vocabularies compress text into fewer tokens, but in a small language model the $V\times d$
-matrix shared by the input embeddings and output projection grows linearly with vocabulary size $V$.
-We ask whether \emph{compact} embedding representations let a model use a larger vocabulary
-without paying for it, when both the vocabulary's storage and the training compute are held fixed. We
-train a pre-LayerNorm Transformer with 32M non-embedding parameters on FineWeb with nested byte-level BPE vocabularies of
-16K, 32K and 64K types. Every arm receives exactly $5\times10^{17}$ estimated training FLOPs, and every
-compact arm must fit its serialised vocabulary into the bytes of the dense 16K table (33.6\,MB). We
-compare a dense baseline, low-rank factorisation (ALBERT-style), adaptive input representations and hash
-embeddings, all adapted to an exactly tied full softmax, plus uncapped dense 32K/64K controls. Quality is
-measured in tokenizer-independent bits per byte (\bpb) on a screening split and on a document-disjoint
-confirmation split that was evaluated only once. At equal storage and compute, Adaptive 64K obtains the
-best confirmation \bpb{} of all eight arms (1.2689 vs.\ 1.2880 for the 16K baseline), beating even
-the dense 64K control that uses $4\times$ the storage. Low-rank 32K recovers 94\% of the dense 32K
-gain at half its storage. Hash 64K is clearly worse than the baseline (1.3789). We show analytically and
-empirically that factorised tied embeddings also shrink the output-softmax cost, which converts saved
-bytes into roughly 50\% more optimiser updates than dense 64K. Hash 64K degrades most severely on rare tokens,
-whose NLL increases by up to 3.5 nats relative to dense 64K. These results come from a single seed
-and a single budget; we report them as such.
+Larger subword vocabularies compress text into fewer tokens, but the tied $V\times d$ embedding matrix, and the cost of the output projection that reuses it, both grow linearly with $V$.
+In a small model, a dense 64K table can outweigh the whole Transformer backbone.
+We ask whether \emph{compact} embedding representations let a small model afford a larger vocabulary when both vocabulary storage and training compute are held fixed.
+We train a 10-layer pre-LayerNorm Transformer with 32M non-vocabulary parameters on FineWeb, using nested byte-level BPE vocabularies of 16K, 32K and 64K tokens.
+Every model receives the same $5\times10^{17}$ estimated training FLOPs, and every compact vocabulary must serialise into the 33.6 MB of the dense 16K table.
+We compare low-rank factorisation (ALBERT-style) and adaptive input representations at 32K and 64K, and hash embeddings at 64K, each adapted to an exactly tied full softmax, against a dense 16K baseline and uncapped dense 32K/64K controls.
+Quality is measured in tokeniser-independent bits per byte (lower is better) on a screening split and on a document-disjoint confirmation split evaluated only once.
+Adaptive 64K achieves the lowest bits per byte (\bpb{}) of all eight models on both splits (confirmation 1.2689 vs. 1.2880 for the baseline), beating even
+the dense 64K control that uses $4\times$ the storage. Low-rank 32K recovers 94\% of the gain from an uncapped dense 32K table at half that table’s size.
+Hash 64K (1.3789) trails dense 64K by 0.105 \bpb{} with the same number of updates on the same data, a controlled negative result. We show analytically and empirically that factorised tied embeddings cap output-projection compute at twice the vocabulary parameter count, so saved storage becomes saved compute, buying about 50\% more optimiser updates than dense 64K, even though dense 64K learns more per update.
+Hash's per-token penalty grows with rarity, reaching $+3.5$ nats on average in the rarest
+third of token types, yet frequent tokens account for most of its \bpb{} gap. These
+single-seed, single-budget results suggest that small models should choose vocabulary size and
+representation jointly.
 
 % ======================================================== INTRODUCTION =======
 \section{Introduction}
 \label{sec:intro}
 
-The vocabulary is a hidden scaling axis of language models. A larger subword vocabulary makes each
+Vocabulary size is often treated as fixed in scaling studies, yet it changes both how much text a model
+sees and what the model costs. A larger subword vocabulary makes each
 token cover more text: in our data, a 16K BPE vocabulary averages 4.14 raw bytes per token, while 64K
-averages 4.60 (+11\%). For a fixed backbone, this means more text is processed per FLOP and the model
-predicts more text per position of context. The price is paid in the vocabulary layer. A dense table
+averages 4.60 (+11\%). With the same backbone, each forward pass therefore covers about 11\% more text, and
+the 1024-token context reaches further back into the document. The price is paid in the vocabulary layer. A dense table
 $E\in\mathbb{R}^{V\times d}$ costs $Vd$ parameters. With weight tying \citep{press2017tying,inan2017tying},
 the same table also forms the output projection, which costs $2Vd$ FLOPs per token in the forward pass.
-Throughout, a \emph{small} model is one whose backbone has fewer than 50M parameters, the ceiling our
-framework enforces; ours has 32.0M (10 layers, $d=512$). At this scale the vocabulary is a large share of
-the model. A dense 16K table already holds 8.4M parameters (33.6\,MB in FP32), 21\% of all parameters. A
-dense 64K table holds 33.6M (134\,MB), \emph{more than the whole backbone}, so over half of the dense 64K
-model is vocabulary. Its output layer costs 67M FLOPs per token, about 80\% of the entire backbone's 84M. Recent work on vocabulary scaling laws
-\citep{tao2024vocab} finds that the compute-optimal vocabulary grows with model size. This suggests that
-small models cannot afford large vocabularies.
+By a \emph{small} model we mean one whose backbone has fewer than 50M parameters; ours has 32.0M
+(10 layers, $d=512$). At this scale the vocabulary is a large share of the model
+(Fig.~\ref{fig:dense_parameters}): a dense 16K table already holds 8.4M parameters (33.6\,MB in FP32), and a
+dense 64K table holds 33.6M (134\,MB), \emph{more than the whole backbone}. Its output layer costs 67M FLOPs
+per token, about 80\% of the entire backbone's 84M. \citet{tao2024vocab} find that the compute-optimal
+vocabulary grows with model size, which implies that the best \emph{dense} vocabulary for a small model is
+relatively small.
 
 \begin{figure}[H]
 \centering
@@ -119,41 +116,38 @@ Percentages show the vocabulary matrix's share of total parameters.}
 \label{fig:dense_parameters}
 \end{figure}
 
-The compression methods considered here emerged in 2017--2020 from word/$n$-gram classification
-(Hash \citep{svenstrup2017hash}), word-level recurrent language modeling (adaptive softmax
-\citep{grave2017adaptivesoftmax}), and subword Transformer encoders (ALBERT \citep{lan2020albert}).
-Adaptive input representations already evaluated decoder-only Transformers with tied word-level adaptive
-representations and tied BPE baselines \citep{baevski2019adaptive}. This motivates testing our tied subword
-full-softmax adaptations on a 32M-parameter backbone across 16K/32K/64K vocabularies under joint fixed
-serialised vocabulary-storage and estimated training-FLOP budgets, rather than assuming that the original
-results transfer to this regime, where vocabulary parameters can constitute a substantial fraction of the model.
-
 \emph{Compact embeddings} (low-rank factorisation \citep{lan2020albert}, hash embeddings
 \citep{svenstrup2017hash} and adaptive, frequency-banded representations \citep{baevski2019adaptive}) all
 cut the parameter cost of the vocabulary. They are usually judged on memory saved for a fixed
-vocabulary. We turn the question around and ask whether these methods can \emph{relocate the optimum}:
-can a small model use a larger vocabulary if the vocabulary is stored compactly? Answering this fairly
-requires two budgets at once. With storage alone fixed, a compact arm could train for longer. With compute
-alone fixed, a dense arm could keep more parameters. We therefore study:
+vocabulary, and they were developed for other settings: hash embeddings for text classification, ALBERT's
+factorisation for a masked encoder, and adaptive inputs mainly for word-level language modelling with an
+adaptive softmax \citep{grave2017adaptivesoftmax}. To our knowledge, none has been tested as an exactly
+tied, full-softmax subword vocabulary in a model this small, where the vocabulary can be most of the
+parameters. Rather than measuring memory saved, we ask whether these methods change which vocabulary size
+is best: can a small model use a larger vocabulary if the vocabulary is stored compactly? A fair answer
+needs both budgets fixed at once: matching storage alone would let a compact model train longer, and
+matching compute alone would let a dense model keep its larger table. Each combination of representation
+and vocabulary size is one experimental \emph{arm}. We study:
 \begin{itemize}
   \item \textbf{RQ1.} With the vocabulary's serialised storage capped at the dense 16K table and the
   training FLOPs fixed, does a compact 32K or 64K vocabulary beat the dense 16K baseline?
-  \item \textbf{RQ2.} How much of the gain of an \emph{uncapped} dense 32K/64K model does each compact
-  representation recover, and why?
+  \item \textbf{RQ2.} How much of the improvement that an \emph{uncapped} dense 32K/64K table gives over the
+  baseline does each compact representation recover, and why?
   \item \textbf{RQ3.} Which tokens pay for compression, and what do the learned representations reveal
   about each method's failure modes?
 \end{itemize}
 
-\textbf{Contributions.} (i) A dual-budget protocol: a byte-exact storage cap on the actual serialised
-vocabulary archive, together with iso-FLOP training of complete optimiser updates. Evaluation uses
-tokenizer-independent \bpb{} and a once-only, document-disjoint confirmation split. (ii) Adaptations of
-low-rank, adaptive and hash embeddings to an \emph{exactly tied, full-softmax} causal LM over BPE subwords.
-(iii) The finding that the best compact arm (Adaptive 64K) beats every dense arm, using approximately the same
-storage as Dense 16K, half that of Dense 32K and a quarter that of Dense 64K. We give an analysis showing that \emph{factorised} tied embeddings (Low-rank and Adaptive, which
-store a small table times a projection instead of the full $V\times d$ table) cap the softmax cost at twice
-the vocabulary parameter count, which turns saved bytes into extra optimiser updates. (iv) Frequency-group and
-representation diagnostics (spectra, band conditioning, hash occupancy and gradient interference) that
-explain the ranking, including a controlled negative result for hash embeddings.
+\textbf{Contributions.} (i) A dual-budget protocol: every compact vocabulary must fit in the same number of
+bytes on disk as the dense 16K table, and every model trains for the same estimated FLOPs, stopping only at a
+complete optimiser update. Evaluation uses tokeniser-independent \bpb{} and a once-only, document-disjoint
+confirmation split. (ii) Adaptations of low-rank, adaptive and hash embeddings to an \emph{exactly tied,
+full-softmax} causal LM over BPE subwords. (iii) The finding that Adaptive 64K achieves the lowest \bpb{} of
+all arms, narrowly ahead of every dense arm while using about the storage of Dense 16K, half that of Dense 32K
+and a quarter that of Dense 64K. (iv) An analysis showing that \emph{factorised} tied embeddings (Low-rank and
+Adaptive, which store small tables plus projections rather than the full $V\times d$ table) cap the
+output-projection cost at twice the vocabulary parameter count, so saved storage becomes saved compute and buys
+extra optimiser updates. (v) Diagnostics by token frequency and of the learned embeddings that help explain
+the ranking, including a controlled negative result for hash embeddings.
 
 % ============================================================ RELATED ========
 \section{Review of Existing Techniques}
@@ -163,10 +157,10 @@ explain the ranking, including a controlled negative result for hash embeddings.
 byte-level variant \citep{radford2019gpt2} trade vocabulary size against sequence length. Scaling-law
 studies \citep{kaplan2020scaling,hoffmann2022chinchilla} usually exclude embedding parameters, but
 \citet{tao2024vocab} show that the vocabulary matters for compute-optimal training and that the optimal
-$V$ grows with non-embedding parameters. Weight tying
-\citep{press2017tying,inan2017tying} shares the input and output matrices. This halves the parameters but
-leaves the output softmax, whose cost is $O(Vd)$ per token. For a small model, the softmax is often the
-single largest matrix multiply.
+$V$ grows with non-embedding parameters. Weight tying \citep{press2017tying,inan2017tying} uses one matrix
+for both input and output. This halves the vocabulary's parameters but not the cost of the output projection,
+which remains $O(Vd)$ per token; in our model it is the largest single matrix multiply even at 16K (16.8M FLOPs
+per token, against 2.1M for the largest backbone matrix).
 
 \textbf{Low-rank factorisation.} ALBERT \citep{lan2020albert} factorises the embedding as
 $E=AB$ with $A\in\mathbb{R}^{V\times r}$ and $B\in\mathbb{R}^{r\times d}$, reducing parameters from $Vd$ to
@@ -177,17 +171,17 @@ constrains the logit matrix to rank $\le r$, the \emph{softmax bottleneck} ident
 
 \textbf{Hash embeddings.} Feature hashing \citep{weinberger2009hashing} maps tokens to a fixed number of
 buckets, so that colliding tokens share an identical vector. \citet{svenstrup2017hash} reduce the
-damage of collisions. Each token selects $k$ component vectors from a shared pool of $B$ vectors using $k$
+damage of collisions. Each token selects $k$ component vectors from a shared pool of $M$ vectors using $k$
 hash functions and combines them with $k$ trainable \emph{importance} weights. Two tokens then coincide
 only if all $k$ indices collide, and the weights let the model separate partial collisions. The method was
 evaluated on text classification, where the embeddings are only read on the input side.
 
 \textbf{Adaptive representations.} The adaptive softmax \citep{grave2017adaptivesoftmax} partitions the
 vocabulary by frequency and gives rare clusters smaller capacity in a hierarchical output layer. Adaptive
-input representations \citep{baevski2019adaptive} carry the idea to the input: band $j$ has dimension
-$d/k^{j}$ (typically $k=4$) and is linearly projected to $d$. Tying the bands with an adaptive softmax gave
-faster training and lower perplexity on word-level WikiText-103. This allocation follows the Zipfian
-prior that frequent tokens deserve more capacity.
+input representations \citep{baevski2019adaptive} carry the idea to the input: band $j$ has a smaller
+width, typically $d/4^{\,j-1}$, and is linearly projected to $d$. Tying the bands with an adaptive softmax gave
+faster training and lower perplexity on word-level WikiText-103. The rationale is Zipf's law: a small set of
+frequent tokens makes up most of the text, so capacity spent on them pays off most.
 
 \textbf{Other approaches and gap.} Compositional codes \citep{shu2018compositional} and tensor-train
 embeddings \citep{hrinchuk2020tensorized} compress the table further, at the cost of more complex
@@ -204,10 +198,11 @@ subword LM afford a larger vocabulary under both budgets. That is the question w
 \subsection{Model and tied vocabulary interface}
 All arms share one backbone: a 10-layer pre-LayerNorm \citep{xiong2020preln} causal Transformer
 \citep{vaswani2017attention} with width $d=512$, 8 heads, FFN width 2048, learned positions (context
-1024), GELU and dropout 0.1. It has 32,033,792 non-vocabulary parameters. A vocabulary module exposes two
-operations that share \emph{the same} parameters: \texttt{lookup}$(w)\in\mathbb{R}^{d}$ returns the input
-row $e_w$, and \texttt{project}$(h)=hE^{\top}\in\mathbb{R}^{V}$ returns the logits of a \emph{full,
-exact} softmax over the effective table $E$. Only the vocabulary module differs between arms. All weights
+1024), GELU and dropout 0.1. It has 32,033,792 non-vocabulary parameters. Each vocabulary
+representation supplies both the input vector $e_w\in\mathbb{R}^{d}$ for token $w$ and, for a final hidden
+state $h$, the logits $hE^{\top}\in\mathbb{R}^{V}$ of a \emph{full, exact} softmax over all $V$ tokens, computed
+from \emph{the same} parameters. $E$ is the effective table, which need not be stored explicitly
+(Fig.~\ref{fig:schematic}). Only the vocabulary representation differs between arms. All weights
 are FP32, so storage is never traded for precision.
 
 \subsection{Vocabulary representations}
@@ -218,21 +213,22 @@ are FP32, so storage is never traded for precision.
 \textbf{Low-rank} \citep{lan2020albert}: $e_w = a_w B$, with $A\in\mathbb{R}^{V\times r}$ and
 $B\in\mathbb{R}^{r\times d}$. Logits are computed as $(hB^{\top})A^{\top}$, so $E$ is never materialised.
 
-\textbf{Adaptive} \citep{baevski2019adaptive}: token types are sorted by \emph{training-set} frequency
-(EOS forced into the head) and split into three bands of sizes $n_1,n_2,n_3$ with widths
+\textbf{Adaptive} \citep{baevski2019adaptive}: token types are sorted by \emph{training-set} frequency,
+with the end-of-sequence token always placed in the most frequent band (the \emph{head}), and split into three bands of sizes $n_1,n_2,n_3$ with widths
 $d_j=512/4^{\,j-1}=512,128,32$. Band $j$ owns a table $A_j\in\mathbb{R}^{n_j\times d_j}$ and a
 projection $B_j\in\mathbb{R}^{d_j\times d}$, and $e_w=a_{w}B_{j(w)}$. \emph{Adaptation:} instead of the
 hierarchical adaptive softmax, the output computes all band logits $(hB_j^{\top})A_j^{\top}$ and
 concatenates them into one exact full softmax. The input and output are therefore exactly tied, and the
 loss is directly comparable with the other arms.
 
-\textbf{Hash} \citep{svenstrup2017hash}: a shared pool $C\in\mathbb{R}^{B\times d}$ and $k=2$
-deterministic hash functions $h_i(w)=\mathrm{SHA256}(\text{seed}_i, w) \bmod B$ (seeds 17, 29). Each token
+\textbf{Hash} \citep{svenstrup2017hash}: a shared pool $C\in\mathbb{R}^{M\times d}$ and $k=2$
+deterministic hash functions $h_i(w)=\mathrm{SHA256}(\text{seed}_i, w) \bmod M$ (seeds 17, 29). Each token
 has learned importance weights $p_w\in\mathbb{R}^{2}$, initialised $\mathcal{N}(0,1/k)$, and
-$e_w = \sum_{i=1}^{2} p_{w,i}\, c_{h_i(w)}$. \emph{Adaptations:} the BPE vocabulary is closed, so
-importance weights are stored per token instead of via a second hash. The effective table is materialised
-once per forward pass and tied to the output softmax. The paper used hash embeddings only on the input
-side; tying them to the output is, to our knowledge, untested.
+$e_w = \sum_{i=1}^{2} p_{w,i}\, c_{h_i(w)}$. \emph{Adaptations:} because the BPE vocabulary is a
+fixed list of $V$ tokens, each token stores its own two weights rather than looking them up through a second
+hash. The effective table is materialised once per forward pass and tied to the output softmax.
+\citet{svenstrup2017hash} used hash embeddings only on the input side; to our knowledge, tying them to the
+output has not been tested.
 
 \begin{figure}[H] 
 \centering
@@ -287,7 +283,7 @@ side; tying them to the output is, to our knowledge, untested.
   \draw[fill=red!45] (1.1,2.2) rectangle (3.1,2.4);
   \draw[fill=red!45] (1.1,0.7) rectangle (3.1,0.9);
   \node at (2.1,1.55) {$C$};
-  \node[below] at (2.1,0) {$B\times d$};
+  \node[below] at (2.1,0) {$M\times d$};
   \draw[->] (0.45,1.55) -- node[pos=0.7,above left,font=\scriptsize,inner sep=1pt] {$h_1$} (1.05,2.3);
   \draw[->] (0.45,1.55) -- node[pos=0.7,below left,font=\scriptsize,inner sep=1pt] {$h_2$} (1.05,0.8);
   % weighted sum -> e_w
@@ -295,7 +291,7 @@ side; tying them to the output is, to our knowledge, untested.
   \draw[->] (3.2,2.3) -- node[above right,font=\scriptsize,inner sep=1pt] {$\times p_{w,1}$} (sum);
   \draw[->] (3.2,0.8) -- node[below right,font=\scriptsize,inner sep=1pt] {$\times p_{w,2}$} (sum);
   \draw[->] (sum) -- (4.5,1.55) node[right] {$e_w$};
-  \node[anchor=west,align=left,font=\scriptsize] at (0,-0.85) {params $Bd + kV$\\softmax $2Vd$ (materialised)};
+  \node[anchor=west,align=left,font=\scriptsize] at (0,-0.85) {params $Md + kV$\\softmax $2Vd$ (materialised)};
   \end{scope}
 \end{tikzpicture}}
 \caption{The four tied vocabulary representations. Each produces the input row $e_w$ and, through the
@@ -315,7 +311,7 @@ not. The allocation rule never sees validation data:
   \item Low-rank: $r=252$ (32K) and $r=127$ (64K), 99.98\% and 99.99\% of the cap.
   \item Adaptive: the middle band is fixed at $V/4$, and the head is the largest multiple of 256 that fits.
         Cutoffs are $[12544, 20736]$ (32K) and $[8448, 24832]$ (64K), 99.3\% of the cap.
-  \item Hash (64K only, the most severe $4\times$ compression): $B=15{,}615$ components, 99.996\% of the cap.
+  \item Hash (64K only, the most severe $4\times$ compression): $M=15{,}615$ components, 99.996\% of the cap.
 \end{itemize}
 Full table shapes, parameter counts and archive bytes for every arm are in Table~\ref{tab:config} (Appendix~\ref{app:details}).
 Dense 32K and 64K use $2\times$ and $4\times$ the cap. They are \emph{exempt controls} that show what an
@@ -324,10 +320,12 @@ uncompressed larger vocabulary achieves.
 \subsection{Budget 2: iso-FLOP training, and why representation changes compute}
 \label{sec:flops}
 Each arm trains until it has spent $5\times10^{17}$ estimated FLOPs: training stops when the next
-complete optimiser update would exceed the budget, leaving less than 0.002\% unused. The estimator counts
-forward and backward matrix multiplications (GEMMs), full causal attention and executed padding, including each representation's own
-graph (for Adaptive, an upper bound on the input side). It excludes the optimiser, loss, normalisation and
-indexing. This is a fixed accounting convention, not measured hardware work.
+complete optimiser update would exceed the budget, leaving less than 0.002\% unused. The estimate counts
+every forward and backward matrix multiplication, including those inside each vocabulary representation (an
+upper bound for Adaptive's input side). Attention is counted over the full square score matrix of each
+window, without discounting the causal mask, and padded positions count whenever they were computed. The
+estimate excludes the optimiser, loss, normalisation and indexing. It is a fixed accounting convention, not a
+measurement of hardware work.
 
 The vocabulary choice changes how many updates fit in this budget. The forward cost of the tied
 output layer per token is
@@ -342,9 +340,9 @@ parameter count}, so a storage cap is also a cap on softmax compute. Our impleme
 materialises the table and therefore still costs $2Vd$ for the output projection. For $V{=}65{,}536$, $d{=}512$,
 Eq.~\eqref{eq:cout} gives 67.1M FLOPs per token for dense or hash, against 16.8M for low-rank and 16.1M for
 adaptive. The backbone costs $\approx$84M FLOPs per token (63M in its weight matrices and 21M in
-full-square attention). The measured cost per update (Table~\ref{tab:main}) is
-$14.6\times10^{12}$ FLOPs for Dense/Hash 64K and $9.8\times10^{12}$ for all factorised arms and the 16K
-baseline. Under iso-FLOPs, a dense 64K model therefore gets one third fewer updates.
+full-square attention). Dividing the budget by the update counts in
+Table~\ref{tab:main} gives about $14.6\times10^{12}$ estimated FLOPs per update for Dense/Hash 64K and
+$9.8\times10^{12}$ for the factorised arms and the 16K baseline. Under iso-FLOPs, a dense 64K model therefore gets one third fewer updates.
 
 % =========================================================== SETUP ===========
 \section{Experimental Setup}
@@ -408,7 +406,7 @@ Adaptive 32K & 512/128/32 & 0.99 & 51,081 & 2.66 & 1.2654 & 1.2778 & $-$0.0102 &
 Dense 64K* & --- & 4.00 & 34,207 & 1.83 & 1.2574 & 1.2744 & $-$0.0136 & 9.7 & 22.2\\
 Low-rank 64K & $r=127$ & 1.00 & 51,243 & 2.74 & 1.2632 & 1.2782 & $-$0.0098 & 11.4 & 21.9\\
 Adaptive 64K & 512/128/32 & 0.99 & 51,368 & 2.75 & \textbf{1.2545} & \textbf{1.2689} & $\mathbf{-0.0191}$ & 25.7 & 21.9\\
-Hash 64K & $B{=}15615,k{=}2$ & 1.00 & 34,205 & 1.83 & 1.3585 & 1.3789 & $+$0.0909 & 9.7 & 22.3\\
+Hash 64K & $M{=}15615,k{=}2$ & 1.00 & 34,205 & 1.83 & 1.3585 & 1.3789 & $+$0.0909 & 9.7 & 22.3\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -466,7 +464,8 @@ capacity. Conversely, Low-rank 64K receives 50\% more updates than Dense 64K yet
 1,500-update moving window (shown from 20\% of the budget). (b) Held-out screening \bpb{} at 25/50/75/100\%
 of the FLOP budget (exact values in Table~\ref{tab:budget}, Appendix~\ref{app:details}). (c) The same held-out points plotted against the training text consumed (sample
 efficiency). Colour shows the representation, and line style shows the vocabulary size (dotted 16K,
-dashed 32K, solid 64K).}
+dashed 32K, solid 64K). The $y$-axes are zoomed on the non-hash arms, so Hash 64K's first held-out point
+(1.576 at 25\% of the budget) lies above the plotted range.}
 \label{fig:curves}
 \end{figure}
 
@@ -547,7 +546,7 @@ is badly conditioned ($\kappa=32{,}754$ at half budget and 319 at the end at 64K
 32-wide projections have $\kappa\approx2$--$3$. A full-width table followed by a square projection is an
 over-parameterisation. Its 1.05\,MB could instead be spent on a larger head.
 
-\textbf{Hash collisions are structural, not rare.} Every token is built from $k=2$ of the $B=15{,}615$
+\textbf{Hash collisions are structural, not rare.} Every token is built from $k=2$ of the $M=15{,}615$
 shared components. Almost every component is in use (15,610), and each is shared by about 8.4 tokens on
 average and up to 21 (Fig.~\ref{fig:freq}c). In total, 550,095 token pairs share at least one component, and
 21 pairs share both, so only their two weights tell them apart. Half of all weights are negative (std 0.53).
