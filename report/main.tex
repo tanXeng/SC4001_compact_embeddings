@@ -378,7 +378,8 @@ was evaluated at 0, 25, 50, 75 and 100\% of the budget for learning curves. \emp
 was evaluated \emph{once} per arm, at the end of training. For diagnosis, we split token types into equal-count
 \emph{thirds} by training frequency rank (or by band, for Adaptive) and report the NLL for each group. At
 50\% and 100\% of the budget we also record spectra of the effective embeddings, band conditioning, hash
-occupancy and collisions, and a bounded gradient-interference probe for shared hash components.
+occupancy and collisions, and a bounded gradient-interference probe for shared hash components (all
+protocols in Appendix~\ref{app:probes}).
 
 % ========================================================== RESULTS ==========
 \section{Results}
@@ -553,9 +554,9 @@ average and up to 21 (Fig.~\ref{fig:freq}c). In total, 550,095 token pairs share
 21 pairs share both, so only their two weights tell them apart. Half of all weights are negative (std 0.53).
 The sharing is also very uneven. The
 busiest component receives 29.2M training occurrences against a median of 30K, because it holds a very
-frequent token. An interference probe on 8 shared components (787 targets) finds that, on the output
-path, the largest selected token contribution accounts on average for 77\% of the sum of selected contribution
-norms, and selected tokens push in unrelated directions (mean cosine $-0.016$). This bounded probe does not
+frequent token. An interference probe (Appendix~\ref{app:probes}) on 8 shared components (787 targets)
+finds that, on the output path, the largest selected token contribution accounts on average for 77\% of the
+sum of selected contribution norms, where an even split between the two tokens would be 50\%, and selected tokens push in unrelated directions (mean cosine $-0.016$). This bounded probe does not
 measure dominance over the complete component gradient or establish that the dominant token is the most frequent.
 
 \subsection{Practical costs}
@@ -717,6 +718,39 @@ Budget & Dense 16K & Dense 32K* & LR 32K & Ad.\ 32K & Dense 64K* & LR 64K & Ad.\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\section{Diagnostic Probes}
+\label{app:probes}
+All probes run on the saved model at 50\% and 100\% of the budget, outside training: they take no
+optimiser step and do not affect the reported runs.
+
+\textbf{Embedding spectra (all arms).} These measure how many independent directions the embeddings
+actually use. We take 128 token IDs spaced evenly across the vocabulary, stack their embedding vectors
+$e_w$ into a $128\times512$ matrix and compute its singular values $\sigma_i$, which measure how
+strongly each direction is used. From these we report the entropy effective rank
+\citep{roy2007effrank}, $\exp(-\sum_i q_i\ln q_i)$ with $q_i=\sigma_i/\sum_j\sigma_j$: it equals the
+number of directions when all are used equally, and is smaller when a few directions dominate. For
+Low-rank we also compute the exact singular values of the full table $E=AB$. The condition number
+$\kappa=\sigma_{\max}/\sigma_{\min}$ of a projection matrix ($B$ for Low-rank, each $B_j$ for Adaptive)
+is large when the matrix squashes some directions almost to zero, which signals wasted capacity.
+
+\textbf{Hash structure.} Counted directly from the fixed hash assignments and the training token
+counts: how many tokens use each component, how often each component is used during training, how many
+token pairs share one or both components, and the distribution of the weights $P$.
+
+\textbf{Hash interference probe (end of training only).} When several tokens share a component, each
+token's training signal pushes on that same shared vector. This probe asks whether those pushes are
+balanced or dominated by one token, and whether they point the same way or in unrelated directions. We
+run the model on a short fixed sample of training text (787 target tokens from two documents) and compute
+each token's \emph{contribution} to the component's gradient (its push, scaled by its weight on that
+component). Because the table is tied, a token is pushed both when it is read as input and when it is
+scored at the output, so we measure the two separately and combined. We examine 8 components, chosen by
+component ID rather than by results, each shared by two tokens in the sample. We report two numbers per
+component, averaged over the 8: \emph{dominance}, the largest token's share of the total push (50\% is an
+even split between two tokens, 100\% means one token does all the pushing), and the \emph{cosine
+similarity} between the tokens' pushes (1: same direction; 0: unrelated; $-1$: opposite). The probe is
+deliberately small, covering 8 of 15,615 components, so it attempts to illustrate the mechanism rather than
+measuring it across the corpus.
 
 \section{Reproduction Commands}
 \label{app:repro}
