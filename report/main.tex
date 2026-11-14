@@ -586,8 +586,8 @@ materialises all $V$ effective rows, so Hash pays the full $2Vd$ output projecti
 (Sec.~\ref{sec:flops}). (2) \emph{Output-side collisions.} On the input side, a shared component is a shared feature. On the output side, every token's 
 logit is a weighted sum of just two of 15,615 shared vectors, so the logits of bucket-mates are coupled. The full softmax must therefore assign distinct 
 output probabilities to tokens whose logits depend on shared components, a constraint absent from the original input-side classification setting 
-\citep{svenstrup2017hash}. (3) \emph{Frequency-blind sharing.} Rare tokens share components with frequent ones. The bounded probe finds
-77\% dominance among selected output-path contribution norms, suggesting uneven influence among bucket-mates. This is consistent with the
+\citep{svenstrup2017hash}. (3) \emph{Frequency-blind sharing.} Rare tokens can share components with frequent ones. Since frequent tokens generate training signals much more often, they may disproportionately shape a shared component, 
+leaving rarer bucket-mates with less influence over its representation. The bounded probe finds 77\% dominance among selected output-path contribution norms, suggesting uneven influence among bucket-mates. This is consistent with the
 $+3.5$-nat rare-third penalty and with prior work showing that rare-token representations can be particularly problematic in tied generative models \citep{gao2019degeneration}. 
 The Dense 64K control has an almost identical update count and training exposure, so the 0.105 \bpb{} gap isolates the effect of the implemented Hash representation. Output-side 
 coupling and frequency-blind sharing are plausible explanations for this gap, but our experiment does not isolate their individual causal effects. The interference probe finds 
@@ -610,24 +610,29 @@ shows that the dense controls catch up as compute grows, so conclusions may also
 convention} is analytic and excludes the loss softmax and indexing. It is not a measure of hardware time. (6)
 \emph{Untuned compact configurations} (no $k$ or band-width search, by design, to avoid outcome-driven
 choices), and Hash was tested only at 64K. (7) The 64K experiment was a follow-up motivated by the completed
-16K/32K study, separately frozen before its runs while reusing the core recipe; the combined study was not one prospectively frozen sweep. Frequency diagnostics use full training counts rather than the prefix each arm
-consumed.
+16K/32K study, separately frozen before its runs while reusing the core recipe; the combined study was not one prospectively frozen sweep. 
+Frequency groups were defined using counts over the full prepared training corpus rather than the subset of that corpus actually consumed by each arm.
 
-\textbf{Future work.} Repeat with several seeds and an IsoFLOP sweep over budgets to locate the
-crossovers. Try hybrids: an Adaptive head without its square projection, a low-rank or hashed tail, and
-frequency-aware hashing. Add efficient fused kernels for banded logits, and post-training quantisation as an
-orthogonal storage axis.
-
+\textbf{Future work.} Repeat with several seeds and an IsoFLOP sweep over budgets to locate the crossovers. 
+Adaptive achieved strong results but was substantially slower in our implementation, motivating more efficient 
+implementations such as fused kernels for banded logits. Another direction is to investigate whether token 
+frequency is the best criterion for allocating representational capacity. Frequent tokens are not necessarily 
+the tokens that require the most capacity. Specifically, some common tokens may be frequent 
+but relatively easy to represent or predict. Training-only measures such as prediction difficulty, gradient 
+statistics or sensitivity could provide alternative signals for assigning tokens to capacity bands. Moreover, 
+a fixed frequency-based allocation may be poorly suited to domain-specific fine-tuning, where tokens that were 
+rare during pretraining can become frequent or important. Allowing capacity assignments to adapt to such distribution 
+shifts is therefore another direction for future work.
 % ======================================================= CONCLUSION ==========
 \section{Conclusion}
 We studied vocabulary scaling for a small Transformer LM while holding both the vocabulary's stored bytes
 and the training FLOPs fixed. Factorised compact embeddings let 32K and 64K vocabularies beat a dense 16K
 baseline at the same storage and compute. Frequency-banded Adaptive 64K was the best of all eight arms,
 ahead even of dense models with $2$--$4\times$ the storage. A main mechanism is that factorised tied
-embeddings cap softmax compute, so saved bytes become extra optimiser updates. Hash embeddings, adapted to a
-tied output, failed in a controlled comparison, with the damage concentrated on rare tokens; we attribute
-this to collisions that couple the tied output logits. These conclusions rest on a single seed and budget, and replicating them across seeds and scales is
-the most important next step.
+embeddings cap softmax compute, so the saved bytes become extra optimiser updates. Hash embeddings, adapted to a tied output, 
+failed in a controlled comparison; the per-token penalty increased sharply with rarity, although frequent tokens contributed 
+most of the aggregate loss gap. These conclusions are based on a single seed and budget, and replicating them across seeds and scales is 
+an important next step.
 
 % ================================================== REPRODUCIBILITY ==========
 \section{Code and Reproducibility}
