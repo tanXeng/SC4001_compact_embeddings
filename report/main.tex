@@ -50,7 +50,7 @@ Compact Tied Embeddings for Vocabulary Scaling\\[4pt] under Fixed Storage and Co
 {\large Group 189 \par}
 \vspace{0.8cm}
 \begin{tabular}{ll}
-Tan Xeng Ian & \TODO{Matriculation no.}\\
+Tan Xeng Ian & U2422661J\\
 Low King Whey & U2423402K\\
 \TODO{Josh Lai} & \TODO{Matriculation no.}\\
 \end{tabular}
@@ -647,9 +647,13 @@ commands.
 \texttt{pyproject.toml}. \textbf{Data preparation:}
 \texttt{reproduce.py prepare} downloads the pinned FineWeb shards ($\approx$2.7\,GB), checks their SHA-256
 hashes, and rebuilds the exact document selection and token shards.
-\textbf{Hardware:} one CUDA GPU with $\geq$30\,GiB per arm (we used A40s).
-\textbf{Figures and tables} in this report are regenerated without GPUs or data from the committed
-\texttt{analysis/data/} files by \texttt{report/make\_figures.py}.
+\textbf{Hardware:} one CUDA GPU per arm (we used 48\,GB A40s); $\geq$30\,GiB is the minimum
+preflight admission threshold, and the frozen batch must also pass the local memory checks.
+Allow at least 16\,GiB host RAM and preferably 40\,GB free disk for preparation.
+\textbf{Figures and analysis:} all four report figures and selected derived numbers are regenerated
+without GPUs, datasets or checkpoints from the committed \texttt{analysis/data/} files by
+\texttt{report/make\_figures.py} (with \texttt{pandas==2.0.3} installed separately).
+The LaTeX tables are transcribed manually from frozen analysis and protocol records.
 
 \textbf{Existing code, data and models.} No pretrained models or weights were used: every arm was
 trained from scratch from a seeded random initialisation. Dense vocabulary, positional and backbone linear weights,
@@ -659,11 +663,11 @@ LayerNorm weights and biases are one and zero, respectively. The models,
 vocabulary representations, training loop and evaluation are built on PyTorch
 \citep{paszke2019pytorch}. BPE tokenisers are fitted with the Hugging Face \texttt{tokenizers} library,
 data are read with \texttt{pyarrow}, configurations with \texttt{PyYAML}, and figures are drawn with
-\texttt{matplotlib}. The training data is the public FineWeb corpus \citep{penedo2024fineweb}. The three
+\texttt{matplotlib}, with \texttt{pandas} for report analysis. The training data is the public FineWeb corpus \citep{penedo2024fineweb}. The three
 compact representations follow the designs of their original papers \citep{lan2020albert,
 baevski2019adaptive,svenstrup2017hash}; adapting them to an exactly tied, full-softmax LM under a byte
 cap, the dual-budget protocol, and the analysis are our contribution.
-\TODO{TBC @ Xeng}
+% \TODO{TBC @ Xeng}
 
 % ===================================================== AI STATEMENT ==========
 \section*{AI Use Statement}
@@ -765,6 +769,7 @@ From a fresh clone (Linux and an NVIDIA GPU for training; CPU is sufficient for 
 git clone https://github.com/tanXeng/SC4001_compact_embeddings vocab-study
 cd vocab-study && git checkout research/vocab-scaling-fp32-isoflops
 python3.11 -m venv .venv && . .venv/bin/activate
+python -m pip install --upgrade pip
 python -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
 python -m pip install -e ".[dev]"
 python -m pytest -q                                          # unit tests
@@ -776,7 +781,10 @@ python scripts/reproduce.py prepare --study 64k --run replication1
 # 3) GPU preflight and explicit authorisation of the frozen protocol
 CUDA_VISIBLE_DEVICES=0 python scripts/reproduce.py preflight --study large --run replication1
 CUDA_VISIBLE_DEVICES=0 python scripts/reproduce.py authorize --study large --run replication1 \
-    --accept-frozen-protocol            # repeat both with --study 64k
+    --accept-frozen-protocol
+CUDA_VISIBLE_DEVICES=0 python scripts/reproduce.py preflight --study 64k --run replication1
+CUDA_VISIBLE_DEVICES=0 python scripts/reproduce.py authorize --study 64k --run replication1 \
+    --accept-frozen-protocol
 
 # 4) train each arm (resumable), then screen and confirm (once-only)
 for arm in baseline16k dense32k lowrank32k adaptive32k; do
@@ -785,11 +793,23 @@ for arm in baseline16k dense32k lowrank32k adaptive32k; do
 for arm in dense64k lowrank64k adaptive64k hash64k; do
   CUDA_VISIBLE_DEVICES=0 python scripts/reproduce.py train --study 64k --run replication1 \
       --arm "$arm" --resume; done
-# evaluate / confirm: same loops with `evaluate` and then `confirm` instead of `train`
+# After all arms finish: screen, then confirm once per arm.
+for operation in evaluate confirm; do
+  for arm in baseline16k dense32k lowrank32k adaptive32k; do
+    CUDA_VISIBLE_DEVICES=0 python scripts/reproduce.py "$operation" --study large \
+        --run replication1 --arm "$arm"; done
+  for arm in dense64k lowrank64k adaptive64k hash64k; do
+    CUDA_VISIBLE_DEVICES=0 python scripts/reproduce.py "$operation" --study 64k \
+        --run replication1 --arm "$arm"; done
+done
+# Endpoint diagnostics run during training; these commands export their records.
+python scripts/reproduce.py diagnostics --study large --run replication1
+python scripts/reproduce.py report      --study large --run replication1
 python scripts/reproduce.py diagnostics --study 64k --run replication1
 python scripts/reproduce.py report      --study 64k --run replication1
 
 # Figures in this report (no GPU or dataset needed):
+python -m pip install pandas==2.0.3
 cd report && python make_figures.py --data ../analysis/data
 \end{verbatim}
 }

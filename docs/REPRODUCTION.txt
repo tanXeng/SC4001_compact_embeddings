@@ -58,16 +58,19 @@ input/output/combined paths. No attribution is run continuously.
 
 FRESH-CLONE REPRODUCTION (independent runs, not the historical launch gates)
 
-  git clone <repository-url> vocab-study
+  git clone https://github.com/tanXeng/SC4001_compact_embeddings vocab-study
   cd vocab-study
+  git checkout research/vocab-scaling-fp32-isoflops
   python3.11 -m venv .venv
   . .venv/bin/activate
+  python -m pip install --upgrade pip
   python -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
   python -m pip install -e ".[dev]"
   python -m pytest -q
 
 Use Python3.11 (original server3.11.10), the pinned dependencies, an NVIDIA CUDA
-GPU with>=30GiB VRAM, >=16GiB host RAM and preferably>=40GB free disk. One arm per
+GPU with>=30GiB VRAM (preflight admission only; the frozen batch must also pass
+local memory checks), >=16GiB host RAM and preferably>=40GB free disk. One arm per
 GPU; no DDP. A40 was the original GPU. CPU machines can verify inputs/prepare data
 and analyze outputs, but cannot pass GPU preflight or authorize training. In
 PowerShell activate .venv/Scripts/Activate.ps1 and set $env:CUDA_VISIBLE_DEVICES.
@@ -153,6 +156,12 @@ explicitly labeled independent_reproduction. It never reads historical results.
 8. Analyze the COMMITTED frozen outputs in analysis/data/ using SCHEMA.txt. They
 are the published completed experiments, not the independent run's new outputs.
 Full compressed update and gradient histories are canonical, lossless and complete.
+Regenerate all four report figures and selected derived numbers without a GPU,
+dataset or checkpoint (from the repository root):
+  python -m pip install pandas==2.0.3
+  cd report && python make_figures.py --data ../analysis/data
+The LaTeX tables are manually transcribed from frozen analysis/protocol records;
+make_figures.py does not emit LaTeX tables.
 
 INTEGRITY SEPARATION: artifacts/reproduction/scientific_inputs.json pins unchanged
 historical scientific code/config/tokenizer/protocol bytes (Python/YAML line endings
