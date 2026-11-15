@@ -52,7 +52,7 @@ Compact Tied Embeddings for Vocabulary Scaling\\[4pt] under Fixed Storage and Co
 \begin{tabular}{ll}
 Tan Xeng Ian & U2422661J\\
 Low King Whey & U2423402K\\
-\TODO{Josh Lai} & \TODO{Matriculation no.}\\
+Josh Lai & U2322999C\\
 \end{tabular}
 \vfill
 {Code and frozen results: \url{https://github.com/tanXeng/SC4001_compact_embeddings}\\
@@ -479,8 +479,8 @@ overtaken their low-rank counterparts. The crossover falls between 75\% and 100\
 Low-rank 64K still leads, 1.2862 vs.\ 1.2884). Adaptive 64K is the only arm that stays ahead of its dense
 control throughout. The training \bpb{} over the final 2,000 updates is
 Adaptive 64K 1.312, Dense 32K 1.315, Low-rank 32K 1.315, Dense 64K 1.319, Low-rank 64K 1.319,
-Adaptive 32K 1.320, baseline 1.333, Hash 1.428. Every arm sees each document at most once, so there is no
-sign of differential overfitting.
+Adaptive 32K 1.320, baseline 1.333, Hash 1.428. Because no document is repeated, training \bpb{} is measured on text the model has not yet seen, so it is
+not inflated by memorisation.
 
 Figure~\ref{fig:curves}c separates \emph{sample} efficiency from \emph{compute} efficiency. At equal
 training text ($\approx$1.37\,GB, which is also $\approx$25.6K updates for every 64K arm), Dense 64K
@@ -581,7 +581,7 @@ has a greater effect on aggregate \bpb{} than allocating the same capacity to ra
 becoming more useful under the more severe 64K compression regime, but additional seeds and allocation ablations would be needed to establish whether the
 32K difference is reliable and whether this mechanism explains the 64K advantage.
 
-\textbf{Why Hash perfomrs poorly.} Three factors combine. (1) \emph{No compute saving in our implementation.} Our implemented Hash output path
+\textbf{Why Hash performs poorly.} Three factors likely contribute. (1) \emph{No compute saving in our implementation.} Our implemented Hash output path
 materialises all $V$ effective rows, so Hash pays the full $2Vd$ output projection and loses a third of its updates compared to Low-rank and Adaptive.
 (Sec.~\ref{sec:flops}). (2) \emph{Output-side collisions.} On the input side, a shared component is a shared feature. On the output side, every token's 
 logit is a weighted sum of just two of 15,615 shared vectors, so the logits of bucket-mates are coupled. The full softmax must therefore assign distinct 
@@ -596,7 +596,7 @@ similar dominance among selected contribution norms on the input (75\%) and outp
 \textbf{Implications.} For LMs of this scale, the choice of vocabulary size and the choice of vocabulary representation are coupled. The ``optimal vocabulary'' 
 observed for dense embeddings partly reflects the dense output-projection cost. Under our fixed storage and analytical FLOP budgets, a compact, frequency-aware 
 tied representation moved the best observed vocabulary from 32K to 64K. This improvement is not free in practice: Adaptive required substantially more wall-clock 
-training time, taking about $2.6\times$ longer than the dense controls in our implementation. Practitioners should therefore consider both analytical FLOPs and 
+training time, taking up to $2.6\times$ longer than the dense controls (at 64K) in our implementation. Practitioners should therefore consider both analytical FLOPs and 
 actual hardware efficiency when choosing a vocabulary representation.
 
 \textbf{Limitations.}
@@ -617,8 +617,7 @@ Frequency groups were defined using counts over the full prepared training corpu
 Adaptive achieved strong results but was substantially slower in our implementation, motivating more efficient 
 implementations such as fused kernels for banded logits. Another direction is to investigate whether token 
 frequency is the best criterion for allocating representational capacity. Frequent tokens are not necessarily 
-the tokens that require the most capacity. Specifically, some common tokens may be frequent 
-but relatively easy to represent or predict. Training-only measures such as prediction difficulty, gradient 
+the tokens that require the most capacity. Specifically, some frequent tokens may be easy to predict and need little capacity. Training-only measures such as prediction difficulty, gradient 
 statistics or sensitivity could provide alternative signals for assigning tokens to capacity bands. Moreover, 
 a fixed frequency-based allocation may be poorly suited to domain-specific fine-tuning, where tokens that were 
 rare during pretraining can become frequent or important. Allowing capacity assignments to adapt to such distribution 
