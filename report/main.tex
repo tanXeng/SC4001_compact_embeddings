@@ -154,8 +154,8 @@ the ranking, including a controlled negative result for hash embeddings.
 \label{sec:related}
 
 \textbf{Vocabulary size and its cost.} Subword tokenisers such as BPE \citep{sennrich2016bpe} and its
-byte-level variant \citep{radford2019gpt2} trade vocabulary size against sequence length. Scaling-law
-studies \citep{kaplan2020scaling,hoffmann2022chinchilla} usually exclude embedding parameters, but
+byte-level variant \citep{radford2019gpt2} trade vocabulary size against sequence length. \citet{kaplan2020scaling} use non-embedding parameter counts, whereas
+\citet{hoffmann2022chinchilla} include embedding parameters and their training FLOPs. Both keep vocabulary size fixed;
 \citet{tao2024vocab} show that the vocabulary matters for compute-optimal training and that the optimal
 $V$ grows with non-embedding parameters. Weight tying \citep{press2017tying,inan2017tying} uses one matrix
 for both input and output. This halves the vocabulary's parameters but not the cost of the output projection,
@@ -187,9 +187,9 @@ frequent tokens makes up most of the text, so capacity spent on them pays off mo
 embeddings \citep{hrinchuk2020tensorized} compress the table further, at the cost of more complex
 decoding. Rare-token embeddings are known to degenerate in tied generative models \citep{gao2019degeneration},
 so compression may hurt the tail most. Previous studies compare these methods (i) at a \emph{fixed
-vocabulary}, (ii) on parameter counts rather than actual bytes, (iii) mostly on input-side or word-level
-tasks, and (iv) rarely with matched training compute. To our knowledge, prior work has not examined whether compact storage lets a small
-subword LM afford a larger vocabulary under both budgets. That is the question we address.
+vocabulary}, (ii) mostly on input-side or word-level tasks, and (iii) rarely with matched training compute.
+Some, including \citet{shu2018compositional}, measure serialised file storage. To our knowledge, prior work has not examined whether compact storage lets a small
+subword LM afford a larger vocabulary while enforcing both a common serialised vocabulary-storage ceiling and a matched estimated training-FLOP budget. That is the question we address.
 
 % ============================================================ METHODS ========
 \section{Methods}
@@ -225,9 +225,9 @@ loss is directly comparable with the other arms.
 \citep{svenstrup2017hash}: a shared pool $C\in\mathbb{R}^{M\times d}$ and $k=2$
 deterministic hash functions $h_i(w)=\mathrm{SHA256}(\text{seed}_i, w) \bmod M$ (seeds 17, 29). Each token
 has learned importance weights $p_w\in\mathbb{R}^{2}$, initialised $\mathcal{N}(0,1/k)$, and
-$e_w = \sum_{i=1}^{2} p_{w,i}\, c_{h_i(w)}$. \emph{Adaptations:} because the BPE vocabulary is a
-fixed list of $V$ tokens, each token stores its own two weights rather than looking them up through a second
-hash. The effective table is materialised once per forward pass and tied to the output softmax.
+$e_w = \sum_{i=1}^{2} p_{w,i}\, c_{h_i(w)}$. Because the BPE vocabulary is a
+fixed list of $V$ tokens, we use the original dictionary variant, with a unique pair of importance weights per token.
+\emph{Adaptation:} the effective table is materialised once per forward pass and tied to the full output softmax.
 \citet{svenstrup2017hash} used hash embeddings only on the input side; to our knowledge, tying them to the
 output has not been tested.
 
@@ -548,7 +548,7 @@ is badly conditioned ($\kappa=32{,}754$ at half budget and 319 at the end at 64K
 32-wide projections have $\kappa\approx2$--$3$. A full-width table followed by a square projection is an
 over-parameterisation. Its 1.05\,MB could instead be spent on a larger head.
 
-\textbf{Hash collisions are structural, not rare.} Every token is built from $k=2$ of the $M=15{,}615$
+\textbf{Collisions are pervasive in the Hash representation.} Every token is built from $k=2$ of the $M=15{,}615$
 shared components. Almost every component is in use (15,610), and each is shared by about 8.4 tokens on
 average and up to 21 (Fig.~\ref{fig:freq}c). In total, 550,095 token pairs share at least one component, and
 21 pairs share both, so only their two weights tell them apart. Half of all weights are negative (std 0.53).
